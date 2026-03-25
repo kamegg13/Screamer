@@ -1,4 +1,6 @@
-use crate::audio_toolkit::{list_input_devices, vad::SmoothedVad, AudioRecorder, SileroVad};
+use crate::audio_toolkit::{
+    list_input_devices, vad::SmoothedVad, AudioMixer, AudioRecorder, SileroVad, SystemAudioCapture,
+};
 use crate::helpers::clamshell;
 use crate::settings::{get_settings, AppSettings};
 use crate::utils;
@@ -181,6 +183,8 @@ fn create_audio_recorder(
     vad_path: &str,
     app_handle: &tauri::AppHandle,
     is_paused: Arc<AtomicBool>,
+    settings: &AppSettings,
+    mic_sample_rate: u32,
 ) -> Result<AudioRecorder, anyhow::Error> {
     let silero = SileroVad::new(vad_path, 0.3)
         .map_err(|e| anyhow::anyhow!("Failed to create SileroVad: {}", e))?;
@@ -188,7 +192,7 @@ fn create_audio_recorder(
 
     // Recorder with VAD plus a spectrum-level callback that forwards updates to
     // the frontend.
-    let recorder = AudioRecorder::new()
+    let mut recorder = AudioRecorder::new()
         .map_err(|e| anyhow::anyhow!("Failed to create AudioRecorder: {}", e))?
         .with_vad(Box::new(smoothed_vad))
         .with_pause_flag(is_paused.clone())
@@ -204,6 +208,23 @@ fn create_audio_recorder(
                 }
             }
         });
+
+    // Optionally set up system audio capture + mixer
+    if settings.system_audio_enabled {
+        match SystemAudioCapture::new(mic_sample_rate) {
+            Ok(capture) => {
+                let mixer = AudioMixer::new(1.0, settings.system_audio_gain);
+                recorder = recorder.with_system_audio(capture, mixer);
+                info!(
+                    "System audio capture enabled (gain: {})",
+                    settings.system_audio_gain
+                );
+            }
+            Err(e) => {
+                log::warn!("System audio capture unavailable, continuing with mic only: {e}");
+            }
+        }
+    }
 
     Ok(recorder)
 }
@@ -335,17 +356,36 @@ impl AudioRecordingManager {
             .map_err(|e| anyhow::anyhow!("Failed to resolve VAD path: {}", e))?;
         let mut recorder_opt = self.recorder.lock().unwrap();
 
+        // Get the selected device from settings, considering clamshell mode
+        let settings = get_settings(&self.app_handle);
+        let selected_device = self.get_effective_microphone_device(&settings);
+
+        // Determine the mic's actual sample rate so system audio capture
+        // can be configured to match (mixing happens before resampling).
+        let mic_sample_rate = {
+            let host = crate::audio_toolkit::get_cpal_host();
+            let device = selected_device
+                .as_ref()
+                .cloned()
+                .or_else(|| {
+                    use cpal::traits::HostTrait;
+                    host.default_input_device()
+                })
+                .ok_or_else(|| anyhow::anyhow!("No input device available"))?;
+            AudioRecorder::get_preferred_config(&device)
+                .map(|cfg| cfg.sample_rate().0)
+                .unwrap_or(crate::audio_toolkit::constants::WHISPER_SAMPLE_RATE)
+        };
+
         if recorder_opt.is_none() {
             *recorder_opt = Some(create_audio_recorder(
                 vad_path.to_str().unwrap(),
                 &self.app_handle,
                 Arc::clone(&self.is_paused),
+                &settings,
+                mic_sample_rate,
             )?);
         }
-
-        // Get the selected device from settings, considering clamshell mode
-        let settings = get_settings(&self.app_handle);
-        let selected_device = self.get_effective_microphone_device(&settings);
 
         if let Some(rec) = recorder_opt.as_mut() {
             rec.open(selected_device)

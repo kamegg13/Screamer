@@ -391,6 +391,10 @@ pub struct AppSettings {
     pub post_process_actions: Vec<PostProcessAction>,
     #[serde(default)]
     pub saved_processing_models: Vec<SavedProcessingModel>,
+    #[serde(default = "default_system_audio_enabled")]
+    pub system_audio_enabled: bool,
+    #[serde(default = "default_system_audio_gain")]
+    pub system_audio_gain: f32,
 }
 
 fn default_model() -> String {
@@ -559,6 +563,15 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
         supports_structured_output: false,
     });
 
+    providers.push(PostProcessProvider {
+        id: "ollama".to_string(),
+        label: "Ollama".to_string(),
+        base_url: "http://localhost:11434/v1".to_string(),
+        allow_base_url_edit: true,
+        models_endpoint: Some("/models".to_string()),
+        supports_structured_output: false,
+    });
+
     // Custom provider always comes last
     providers.push(PostProcessProvider {
         id: "custom".to_string(),
@@ -616,6 +629,14 @@ fn default_long_audio_threshold_seconds() -> f32 {
 
 fn default_gemini_model() -> String {
     "gemini-2.5-flash".to_string()
+}
+
+fn default_system_audio_enabled() -> bool {
+    false
+}
+
+fn default_system_audio_gain() -> f32 {
+    0.5
 }
 
 fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
@@ -808,6 +829,8 @@ pub fn get_default_settings() -> AppSettings {
         gemini_model: default_gemini_model(),
         post_process_actions: Vec::new(),
         saved_processing_models: Vec::new(),
+        system_audio_enabled: default_system_audio_enabled(),
+        system_audio_gain: default_system_audio_gain(),
     }
 }
 

@@ -1,8 +1,9 @@
 use crate::settings::PostProcessProvider;
-use log::debug;
+use log::{debug, warn};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 
 #[derive(Debug, Serialize)]
 struct ChatMessage {
@@ -64,6 +65,7 @@ fn build_headers(provider: &PostProcessProvider, api_key: &str) -> Result<Header
     headers.insert("X-Title", HeaderValue::from_static("Handy"));
 
     // Provider-specific auth headers
+    // Skip Bearer auth for Ollama when no API key is set (local server, no auth needed)
     if !api_key.is_empty() {
         if provider.id == "anthropic" {
             headers.insert(
@@ -207,6 +209,11 @@ pub async fn fetch_models(
         return fetch_gemini_models(&api_key).await;
     }
 
+    // Ollama: try native /api/tags first for richer metadata, fall back to /v1/models
+    if provider.id == "ollama" {
+        return fetch_ollama_models(provider, &api_key).await;
+    }
+
     let base_url = provider.base_url.trim_end_matches('/');
     let url = format!("{}/models", base_url);
 
@@ -303,4 +310,138 @@ async fn fetch_gemini_models(api_key: &str) -> Result<Vec<String>, String> {
     }
 
     Ok(models)
+}
+
+/// Strip the /v1 (or /v1/) suffix from an Ollama base_url to get the root URL.
+/// E.g. "http://localhost:11434/v1" -> "http://localhost:11434"
+fn ollama_root_url(base_url: &str) -> String {
+    let url = base_url.trim_end_matches('/');
+    url.strip_suffix("/v1").unwrap_or(url).to_string()
+}
+
+/// Fetch models from Ollama using the native /api/tags endpoint for richer metadata.
+/// Falls back to the OpenAI-compatible /v1/models if /api/tags fails.
+async fn fetch_ollama_models(
+    provider: &PostProcessProvider,
+    api_key: &str,
+) -> Result<Vec<String>, String> {
+    let root = ollama_root_url(&provider.base_url);
+    let tags_url = format!("{}/api/tags", root);
+
+    debug!("Fetching Ollama models from native API: {}", tags_url);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+    // Try native /api/tags first
+    match client.get(&tags_url).send().await {
+        Ok(response) if response.status().is_success() => {
+            let parsed: Value = response
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse Ollama /api/tags response: {}", e))?;
+
+            if let Some(models_arr) = parsed.get("models").and_then(|m| m.as_array()) {
+                let models: Vec<String> = models_arr
+                    .iter()
+                    .filter_map(|entry| {
+                        let name = entry.get("name")?.as_str()?;
+                        Some(name.to_string())
+                    })
+                    .collect();
+
+                return Ok(models);
+            }
+        }
+        Ok(response) => {
+            warn!(
+                "Ollama /api/tags returned status {}, falling back to /v1/models",
+                response.status()
+            );
+        }
+        Err(e) => {
+            if e.is_connect() {
+                return Err("Ollama is not running. Please start Ollama and try again.".to_string());
+            }
+            warn!(
+                "Failed to reach Ollama /api/tags: {}, falling back to /v1/models",
+                e
+            );
+        }
+    }
+
+    // Fallback: use the OpenAI-compatible /v1/models endpoint
+    let fallback_url = format!("{}/models", provider.base_url.trim_end_matches('/'));
+    debug!(
+        "Falling back to OpenAI-compatible endpoint: {}",
+        fallback_url
+    );
+
+    let headers = build_headers(provider, api_key)?;
+    let fallback_client = reqwest::Client::builder()
+        .default_headers(headers)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+    let response = fallback_client
+        .get(&fallback_url)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_connect() {
+                "Ollama is not running. Please start Ollama and try again.".to_string()
+            } else {
+                format!("Failed to fetch Ollama models: {}", e)
+            }
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(format!(
+            "Ollama model list request failed ({}): {}",
+            status, error_text
+        ));
+    }
+
+    let parsed: Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    let mut models = Vec::new();
+    if let Some(data) = parsed.get("data").and_then(|d| d.as_array()) {
+        for entry in data {
+            if let Some(id) = entry.get("id").and_then(|i| i.as_str()) {
+                models.push(id.to_string());
+            }
+        }
+    }
+
+    Ok(models)
+}
+
+/// Check if an Ollama instance is reachable at the given base_url.
+/// Strips /v1 suffix and hits the root endpoint with a short timeout.
+pub async fn check_ollama_status(base_url: &str) -> bool {
+    let root = ollama_root_url(base_url);
+
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    match client.get(&root).send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
 }

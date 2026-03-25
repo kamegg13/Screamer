@@ -1,5 +1,6 @@
 use crate::audio_feedback;
 use crate::audio_toolkit::audio::{list_input_devices, list_output_devices};
+use crate::audio_toolkit::SystemAudioCapture;
 use crate::managers::audio::{AudioRecordingManager, MicrophoneMode};
 use crate::settings::{get_settings, write_settings};
 use log::warn;
@@ -199,4 +200,72 @@ pub fn get_clamshell_microphone(app: AppHandle) -> Result<String, String> {
 pub fn is_recording(app: AppHandle) -> bool {
     let audio_manager = app.state::<Arc<AudioRecordingManager>>();
     audio_manager.is_recording()
+}
+
+// ─── System Audio Commands ───────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct SystemAudioSourceInfo {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_system_audio_sources() -> Vec<SystemAudioSourceInfo> {
+    SystemAudioCapture::list_sources()
+        .into_iter()
+        .map(|s| SystemAudioSourceInfo {
+            id: s.id,
+            name: s.name,
+            is_default: s.is_default,
+        })
+        .collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn toggle_system_audio(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = get_settings(&app);
+    settings.system_audio_enabled = enabled;
+    write_settings(&app, settings);
+
+    // Restart mic stream so the new setting takes effect
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+    rm.update_selected_device()
+        .map_err(|e| format!("Failed to restart audio stream: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_system_audio_gain(app: AppHandle, gain: f32) -> Result<(), String> {
+    if !(0.0..=2.0).contains(&gain) {
+        return Err("Gain must be between 0.0 and 2.0".into());
+    }
+
+    let mut settings = get_settings(&app);
+    settings.system_audio_gain = gain;
+    write_settings(&app, settings);
+
+    // Restart mic stream so the new gain takes effect
+    let rm = app.state::<Arc<AudioRecordingManager>>();
+    rm.update_selected_device()
+        .map_err(|e| format!("Failed to restart audio stream: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_system_audio_enabled(app: AppHandle) -> bool {
+    get_settings(&app).system_audio_enabled
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn get_system_audio_gain(app: AppHandle) -> f32 {
+    get_settings(&app).system_audio_gain
 }

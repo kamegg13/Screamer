@@ -15,7 +15,7 @@ use cpal::{
 };
 
 use crate::audio_toolkit::{
-    audio::{AudioVisualiser, FrameResampler},
+    audio::{mixer::AudioMixer, system_audio::SystemAudioCapture, AudioVisualiser, FrameResampler},
     constants,
     vad::{self, VadFrame},
     VoiceActivityDetector,
@@ -34,6 +34,8 @@ pub struct AudioRecorder {
     vad: Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     pause_flag: Option<Arc<AtomicBool>>,
+    system_audio: Option<SystemAudioCapture>,
+    mixer: Option<AudioMixer>,
 }
 
 impl AudioRecorder {
@@ -45,6 +47,8 @@ impl AudioRecorder {
             vad: None,
             level_cb: None,
             pause_flag: None,
+            system_audio: None,
+            mixer: None,
         })
     }
 
@@ -63,6 +67,12 @@ impl AudioRecorder {
 
     pub fn with_pause_flag(mut self, flag: Arc<AtomicBool>) -> Self {
         self.pause_flag = Some(flag);
+        self
+    }
+
+    pub fn with_system_audio(mut self, capture: SystemAudioCapture, mixer: AudioMixer) -> Self {
+        self.system_audio = Some(capture);
+        self.mixer = Some(mixer);
         self
     }
 
@@ -87,6 +97,18 @@ impl AudioRecorder {
         // Move the optional level callback into the worker thread
         let level_cb = self.level_cb.clone();
         let pause_flag = self.pause_flag.clone();
+
+        // Move system audio + mixer into the worker thread
+        let mut system_audio = self.system_audio.take();
+        let mixer = self.mixer.take();
+
+        // Start system audio capture before spawning the worker
+        if let Some(ref mut sa) = system_audio {
+            if let Err(e) = sa.start() {
+                log::warn!("System audio capture failed to start, continuing with mic only: {e}");
+                system_audio = None;
+            }
+        }
 
         let worker = std::thread::spawn(move || {
             let worker_result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
@@ -146,7 +168,16 @@ impl AudioRecorder {
                     .map_err(|err| format!("failed to start input stream: {err}"))?;
 
                 // Keep the stream alive while we process samples.
-                run_consumer(sample_rate, vad, sample_rx, cmd_rx, level_cb, pause_flag);
+                run_consumer(
+                    sample_rate,
+                    vad,
+                    sample_rx,
+                    cmd_rx,
+                    level_cb,
+                    pause_flag,
+                    system_audio,
+                    mixer,
+                );
                 Ok(())
             }));
 
@@ -250,7 +281,7 @@ impl AudioRecorder {
         )
     }
 
-    fn get_preferred_config(
+    pub(crate) fn get_preferred_config(
         device: &cpal::Device,
     ) -> Result<cpal::SupportedStreamConfig, Box<dyn std::error::Error>> {
         let supported_configs = device.supported_input_configs()?;
@@ -296,6 +327,8 @@ fn run_consumer(
     cmd_rx: mpsc::Receiver<Cmd>,
     level_cb: Option<Arc<dyn Fn(Vec<f32>) + Send + Sync + 'static>>,
     pause_flag: Option<Arc<AtomicBool>>,
+    system_audio: Option<SystemAudioCapture>,
+    mixer: Option<AudioMixer>,
 ) {
     let mut frame_resampler = FrameResampler::new(
         in_sample_rate as usize,
@@ -404,12 +437,24 @@ fn run_consumer(
             }
         }
 
-        // ---------- existing pipeline ------------------------------------ //
+        // ---------- mixing + pipeline -------------------------------------- //
         let is_paused = pause_flag
             .as_ref()
             .map_or(false, |f| f.load(Ordering::Relaxed));
         if !is_paused {
-            frame_resampler.push(&raw, &mut |frame: &[f32]| {
+            // Mix system audio into the mic signal if available
+            let mixed = if let (Some(ref sa), Some(ref mixer)) = (&system_audio, &mixer) {
+                let sys_samples = sa.drain_samples();
+                if sys_samples.is_empty() {
+                    mixer.passthrough(&raw)
+                } else {
+                    mixer.mix(&raw, &sys_samples)
+                }
+            } else {
+                raw
+            };
+
+            frame_resampler.push(&mixed, &mut |frame: &[f32]| {
                 handle_frame(frame, recording, &vad, &mut processed_samples)
             });
         }
@@ -443,7 +488,7 @@ mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
 
         let worker = std::thread::spawn(move || {
-            run_consumer(16_000, None, sample_rx, cmd_rx, None, None);
+            run_consumer(16_000, None, sample_rx, cmd_rx, None, None, None, None);
         });
 
         cmd_tx.send(Cmd::Shutdown).expect("send shutdown");

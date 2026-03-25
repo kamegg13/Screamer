@@ -5,8 +5,8 @@ pub mod utils;
 pub mod vad;
 
 pub use audio::{
-    list_input_devices, list_output_devices, load_wav_file, save_wav_file, AudioRecorder,
-    CpalDeviceInfo,
+    list_input_devices, list_output_devices, load_wav_file, save_wav_file, AudioMixer,
+    AudioRecorder, CpalDeviceInfo, SystemAudioCapture, SystemAudioError, SystemAudioSource,
 };
 pub use text::{apply_custom_words, filter_transcription_output};
 pub use utils::get_cpal_host;

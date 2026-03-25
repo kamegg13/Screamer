@@ -368,6 +368,10 @@
           "refreshModels": "Làm mới mô hình"
         }
       },
+      "ollamaNoApiKey": "Không cần khóa API",
+      "ollamaOffline": "Ollama chưa được khởi chạy",
+      "ollamaOnline": "Đã kết nối",
+      "ollamaConnecting": "Đang kết nối...",
       "prompts": {
         "title": "Prompt",
         "selectedPrompt": {

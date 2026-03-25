@@ -402,6 +402,10 @@
           "refreshModels": "Refresh models"
         }
       },
+      "ollamaNoApiKey": "No API key required",
+      "ollamaOffline": "Ollama is not running",
+      "ollamaOnline": "Connected",
+      "ollamaConnecting": "Connecting...",
       "prompts": {
         "title": "Prompt",
         "selectedPrompt": {

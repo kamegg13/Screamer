@@ -368,6 +368,10 @@
           "refreshModels": "Actualiser les modèles"
         }
       },
+      "ollamaNoApiKey": "Aucune clé API requise",
+      "ollamaOffline": "Ollama n'est pas lancé",
+      "ollamaOnline": "Connecté",
+      "ollamaConnecting": "Connexion...",
       "prompts": {
         "title": "Prompt",
         "selectedPrompt": {

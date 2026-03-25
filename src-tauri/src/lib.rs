@@ -379,6 +379,11 @@ pub fn run(cli_args: CliArgs) {
         commands::audio::set_clamshell_microphone,
         commands::audio::get_clamshell_microphone,
         commands::audio::is_recording,
+        commands::audio::get_system_audio_sources,
+        commands::audio::toggle_system_audio,
+        commands::audio::set_system_audio_gain,
+        commands::audio::get_system_audio_enabled,
+        commands::audio::get_system_audio_gain,
         commands::transcription::set_model_unload_timeout,
         commands::transcription::get_model_load_status,
         commands::transcription::unload_model_manually,
@@ -391,6 +396,7 @@ pub fn run(cli_args: CliArgs) {
         commands::history::reprocess_history_entry,
         commands::gemini::change_gemini_api_key_setting,
         commands::gemini::change_gemini_model_setting,
+        commands::ollama::check_ollama_status,
         helpers::clamshell::is_laptop,
     ]);
 

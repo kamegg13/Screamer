@@ -7,6 +7,7 @@ import React, {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import { ChevronDown, Globe, RefreshCcw, X } from "lucide-react";
 import type { ModelCardStatus } from "@/components/onboarding";
 import { ModelCard } from "@/components/onboarding";
@@ -18,10 +19,97 @@ import { commands } from "@/bindings";
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Dropdown } from "@/components/ui";
+import Badge from "@/components/ui/Badge";
 
 // check if model supports a language based on its supported_languages list
 const modelSupportsLanguage = (model: ModelInfo, langCode: string): boolean => {
   return model.supported_languages.includes(langCode);
+};
+
+const OLLAMA_PROVIDER_ID = "ollama";
+
+type OllamaConnectionStatus = "idle" | "connecting" | "online" | "offline";
+
+const OllamaStatusIndicator: React.FC<{ status: OllamaConnectionStatus }> = ({
+  status,
+}) => {
+  const { t } = useTranslation();
+
+  const statusConfig: Record<
+    OllamaConnectionStatus,
+    { dotClass: string; labelKey: string }
+  > = {
+    idle: {
+      dotClass: "bg-mid-gray/40",
+      labelKey: "settings.postProcessing.ollamaConnecting",
+    },
+    connecting: {
+      dotClass: "bg-yellow-400 animate-pulse",
+      labelKey: "settings.postProcessing.ollamaConnecting",
+    },
+    online: {
+      dotClass: "bg-green-400",
+      labelKey: "settings.postProcessing.ollamaOnline",
+    },
+    offline: {
+      dotClass: "bg-red-400",
+      labelKey: "settings.postProcessing.ollamaOffline",
+    },
+  };
+
+  const config = statusConfig[status];
+
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className={`w-2 h-2 rounded-full flex-shrink-0 ${config.dotClass}`}
+      />
+      <span className="text-xs text-text/70">{t(config.labelKey)}</span>
+    </div>
+  );
+};
+
+const useOllamaStatus = (
+  providerId: string,
+  baseUrl: string,
+): OllamaConnectionStatus => {
+  const [status, setStatus] = useState<OllamaConnectionStatus>("idle");
+
+  useEffect(() => {
+    if (providerId !== OLLAMA_PROVIDER_ID) {
+      setStatus("idle");
+      return;
+    }
+
+    let cancelled = false;
+
+    const checkStatus = async () => {
+      if (cancelled) return;
+      setStatus("connecting");
+      try {
+        const isOnline = await invoke<boolean>("check_ollama_status", {
+          baseUrl,
+        });
+        if (!cancelled) {
+          setStatus(isOnline ? "online" : "offline");
+        }
+      } catch {
+        if (!cancelled) {
+          setStatus("offline");
+        }
+      }
+    };
+
+    checkStatus();
+    const interval = setInterval(checkStatus, 30_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [providerId, baseUrl]);
+
+  return status;
 };
 
 const ProcessingModelsSection: React.FC = () => {
@@ -43,6 +131,16 @@ const ProcessingModelsSection: React.FC = () => {
   const savedModels = getSetting("saved_processing_models") || [];
   const providers = settings?.post_process_providers || [];
 
+  const isOllamaSelected = selectedProviderId === OLLAMA_PROVIDER_ID;
+
+  const selectedProvider = useMemo(
+    () => providers.find((p) => p.id === selectedProviderId),
+    [providers, selectedProviderId],
+  );
+
+  const ollamaBaseUrl = selectedProvider?.base_url ?? "http://localhost:11434";
+  const ollamaStatus = useOllamaStatus(selectedProviderId, ollamaBaseUrl);
+
   const providerOptions = useMemo(
     () => providers.map((p) => ({ value: p.id, label: p.label })),
     [providers],
@@ -58,15 +156,19 @@ const ProcessingModelsSection: React.FC = () => {
     (providerId: string) => {
       setSelectedProviderId(providerId);
       setSelectedModel("");
-      const existingKey = settings?.post_process_api_keys?.[providerId] ?? "";
-      setApiKey(existingKey);
+      if (providerId !== OLLAMA_PROVIDER_ID) {
+        const existingKey = settings?.post_process_api_keys?.[providerId] ?? "";
+        setApiKey(existingKey);
+      } else {
+        setApiKey("");
+      }
     },
     [settings],
   );
 
   const handleFetchModels = useCallback(async () => {
     if (!selectedProviderId) return;
-    if (apiKey.trim()) {
+    if (!isOllamaSelected && apiKey.trim()) {
       await updatePostProcessApiKey(selectedProviderId, apiKey.trim());
     }
     setIsFetching(true);
@@ -78,8 +180,25 @@ const ProcessingModelsSection: React.FC = () => {
   }, [
     selectedProviderId,
     apiKey,
+    isOllamaSelected,
     fetchPostProcessModels,
     updatePostProcessApiKey,
+  ]);
+
+  // Auto-fetch models when Ollama is selected and online
+  useEffect(() => {
+    if (
+      isOllamaSelected &&
+      ollamaStatus === "online" &&
+      availableModels.length === 0
+    ) {
+      handleFetchModels();
+    }
+  }, [
+    isOllamaSelected,
+    ollamaStatus,
+    availableModels.length,
+    handleFetchModels,
   ]);
 
   const handleSave = useCallback(async () => {
@@ -120,6 +239,8 @@ const ProcessingModelsSection: React.FC = () => {
     setSelectedModel("");
     setApiKey("");
   }, []);
+
+  const canFetchModels = isOllamaSelected || apiKey.trim().length > 0;
 
   return (
     <div className="space-y-3">
@@ -170,20 +291,31 @@ const ProcessingModelsSection: React.FC = () => {
 
           {selectedProviderId && (
             <>
-              <div className="space-y-1">
-                <label className="text-sm font-semibold">
-                  {t("settings.models.processingModels.apiKey")}
-                </label>
-                <Input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={t(
-                    "settings.models.processingModels.apiKeyPlaceholder",
-                  )}
-                  variant="compact"
-                />
-              </div>
+              {isOllamaSelected && (
+                <div className="flex items-center justify-between p-2.5 rounded-lg bg-mid-gray/5 border border-mid-gray/10">
+                  <OllamaStatusIndicator status={ollamaStatus} />
+                  <Badge variant="secondary">
+                    {t("settings.postProcessing.ollamaNoApiKey")}
+                  </Badge>
+                </div>
+              )}
+
+              {!isOllamaSelected && (
+                <div className="space-y-1">
+                  <label className="text-sm font-semibold">
+                    {t("settings.models.processingModels.apiKey")}
+                  </label>
+                  <Input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder={t(
+                      "settings.models.processingModels.apiKeyPlaceholder",
+                    )}
+                    variant="compact"
+                  />
+                </div>
+              )}
 
               <div className="space-y-1">
                 <label className="text-sm font-semibold">
@@ -214,7 +346,7 @@ const ProcessingModelsSection: React.FC = () => {
                   )}
                   <button
                     onClick={handleFetchModels}
-                    disabled={isFetching || !apiKey.trim()}
+                    disabled={isFetching || !canFetchModels}
                     className="flex items-center justify-center h-8 w-8 rounded-md bg-mid-gray/10 hover:bg-mid-gray/20 transition-colors disabled:opacity-40"
                     title={t("settings.models.processingModels.fetchModels")}
                   >
