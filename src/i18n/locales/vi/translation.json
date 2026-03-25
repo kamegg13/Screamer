@@ -227,6 +227,15 @@
       "volume": {
         "title": "Âm lượng",
         "description": "Điều chỉnh âm lượng của âm thanh phản hồi"
+      },
+      "systemAudio": {
+        "capture": "Thu âm thanh hệ thống",
+        "captureDescription": "Trộn âm thanh hệ thống với đầu vào micrô",
+        "gain": "Âm lượng âm thanh hệ thống",
+        "gainDescription": "Điều chỉnh mức âm thanh hệ thống trong bản trộn",
+        "source": "Nguồn âm thanh",
+        "sourceDescription": "Chọn thiết bị đầu ra để thu",
+        "noSources": "Không có nguồn âm thanh hệ thống nào"
       }
     },
     "advanced": {

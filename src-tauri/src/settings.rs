@@ -1,4 +1,4 @@
-use log::{debug, warn};
+use log::{debug, info, warn};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use specta::Type;
@@ -688,6 +688,37 @@ fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
                     .post_process_models
                     .insert(provider.id.clone(), default_model);
                 changed = true;
+            }
+        }
+    }
+
+    // Migrate users who had "custom" provider pointing to Ollama (port 11434)
+    if settings.post_process_provider_id == "custom" {
+        if let Some(custom_provider) = settings
+            .post_process_providers
+            .iter()
+            .find(|p| p.id == "custom")
+        {
+            if custom_provider.base_url.contains("11434") {
+                settings.post_process_provider_id = "ollama".to_string();
+                // Copy the custom API key if any
+                if let Some(key) = settings.post_process_api_keys.get("custom").cloned() {
+                    if !key.is_empty() {
+                        settings
+                            .post_process_api_keys
+                            .insert("ollama".to_string(), key);
+                    }
+                }
+                // Copy the custom model if any
+                if let Some(model) = settings.post_process_models.get("custom").cloned() {
+                    if !model.is_empty() {
+                        settings
+                            .post_process_models
+                            .insert("ollama".to_string(), model);
+                    }
+                }
+                changed = true;
+                info!("Migrated post-processing provider from 'custom' to 'ollama'");
             }
         }
     }

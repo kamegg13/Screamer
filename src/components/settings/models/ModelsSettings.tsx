@@ -28,6 +28,12 @@ const modelSupportsLanguage = (model: ModelInfo, langCode: string): boolean => {
 
 const OLLAMA_PROVIDER_ID = "ollama";
 
+// TODO: The Rust backend exposes `fetch_ollama_models_detailed` which returns
+// OllamaModelInfo with `parameter_size` and `quantization_level` fields.
+// Once this command is added to bindings.ts (via tauri-specta), use it to show
+// badges next to Ollama model names in ProcessingModelsSection (e.g. "7B Q4_0").
+// Example: invoke<OllamaModelInfo[]>("fetch_ollama_models_detailed")
+
 type OllamaConnectionStatus = "idle" | "connecting" | "online" | "offline";
 
 const OllamaStatusIndicator: React.FC<{ status: OllamaConnectionStatus }> = ({

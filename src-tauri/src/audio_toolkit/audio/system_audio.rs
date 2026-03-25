@@ -1,8 +1,8 @@
 //! Cross-platform system audio capture abstraction.
 //!
 //! - **macOS**: Uses ScreenCaptureKit for audio-only capture of system output.
-//! - **Windows**: Stub (WASAPI loopback — future implementation).
-//! - **Linux**: Stub (PulseAudio monitor — future implementation).
+//! - **Windows**: Uses WASAPI loopback via cpal (build_input_stream on output device).
+//! - **Linux**: Uses PulseAudio monitor sources via cpal.
 
 use std::sync::mpsc;
 
@@ -145,6 +145,7 @@ mod platform {
         sample_rx: Option<mpsc::Receiver<Vec<f32>>>,
         stream: Option<SCStream>,
         running: Arc<AtomicBool>,
+        actual_sample_rate: u32,
     }
 
     impl SystemAudioCapture {
@@ -205,7 +206,16 @@ mod platform {
                 sample_rx: Some(sample_rx),
                 stream: Some(stream),
                 running,
+                actual_sample_rate: sck_rate as u32,
             })
+        }
+
+        /// Returns the actual sample rate used by ScreenCaptureKit.
+        ///
+        /// This may differ from the requested rate if SCK doesn't support
+        /// the target rate and fell back to 48000 Hz.
+        pub fn sample_rate(&self) -> u32 {
+            self.actual_sample_rate
         }
 
         pub fn start(&mut self) -> Result<(), SystemAudioError> {
@@ -264,70 +274,373 @@ mod platform {
     }
 }
 
-// ─── Windows stub ────────────────────────────────────────────────────────────
+// ─── Windows implementation (WASAPI loopback via cpal) ──────────────────────
 
 #[cfg(target_os = "windows")]
 mod platform {
     use super::*;
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use cpal::Stream;
 
-    pub struct SystemAudioCapture;
+    pub struct SystemAudioCapture {
+        sample_rx: Option<mpsc::Receiver<Vec<f32>>>,
+        /// The default output device used for loopback capture.
+        device: cpal::Device,
+        /// The native sample rate of the output device.
+        device_sample_rate: u32,
+        /// The sample rate requested by the caller (informational — no resampling here).
+        _target_sample_rate: u32,
+        /// The active loopback stream (present while capturing).
+        stream: Option<Stream>,
+        /// Sender side kept alive so the channel doesn't close prematurely.
+        sample_tx: Option<mpsc::Sender<Vec<f32>>>,
+    }
 
     impl SystemAudioCapture {
-        pub fn new(_target_sample_rate: u32) -> Result<Self, SystemAudioError> {
-            // TODO: Implement WASAPI loopback capture via cpal output device
-            Err(SystemAudioError::UnsupportedPlatform)
+        /// Create a new system audio capture.
+        ///
+        /// On Windows, cpal's WASAPI backend automatically enables loopback when
+        /// `build_input_stream()` is called on a render (output) device.
+        pub fn new(target_sample_rate: u32) -> Result<Self, SystemAudioError> {
+            let host = cpal::default_host();
+            let device = host.default_output_device().ok_or_else(|| {
+                SystemAudioError::InitFailed("No default output device found".into())
+            })?;
+
+            let config = device.default_output_config().map_err(|e| {
+                SystemAudioError::InitFailed(format!("Failed to get default output config: {e}"))
+            })?;
+
+            let device_sample_rate = config.sample_rate().0;
+            log::info!(
+                "Windows loopback: output device rate={device_sample_rate}, target={target_sample_rate}"
+            );
+
+            let (sample_tx, sample_rx) = mpsc::channel::<Vec<f32>>();
+
+            Ok(Self {
+                sample_rx: Some(sample_rx),
+                device,
+                device_sample_rate,
+                _target_sample_rate: target_sample_rate,
+                stream: None,
+                sample_tx: Some(sample_tx),
+            })
+        }
+
+        /// Returns the actual sample rate of the loopback capture device.
+        pub fn sample_rate(&self) -> u32 {
+            self.device_sample_rate
         }
 
         pub fn start(&mut self) -> Result<(), SystemAudioError> {
-            Err(SystemAudioError::UnsupportedPlatform)
+            if self.stream.is_some() {
+                // Already running
+                return Ok(());
+            }
+
+            let tx = self.sample_tx.clone().ok_or(SystemAudioError::NotRunning)?;
+            let channels = self
+                .device
+                .default_output_config()
+                .map_err(|e| {
+                    SystemAudioError::InitFailed(format!("Failed to query output config: {e}"))
+                })?
+                .channels() as usize;
+
+            let config = cpal::StreamConfig {
+                channels: channels as u16,
+                sample_rate: cpal::SampleRate(self.device_sample_rate),
+                buffer_size: cpal::BufferSize::Default,
+            };
+
+            // Build an *input* stream on the *output* device — WASAPI treats this as loopback.
+            let stream = self
+                .device
+                .build_input_stream(
+                    &config,
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        if data.is_empty() {
+                            return;
+                        }
+                        let mono = if channels == 1 {
+                            data.to_vec()
+                        } else {
+                            data.chunks_exact(channels)
+                                .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+                                .collect()
+                        };
+                        let _ = tx.send(mono);
+                    },
+                    |err| {
+                        log::error!("WASAPI loopback stream error: {err}");
+                    },
+                    None, // no timeout
+                )
+                .map_err(|e| {
+                    SystemAudioError::InitFailed(format!(
+                        "Failed to build WASAPI loopback stream: {e}"
+                    ))
+                })?;
+
+            stream.play().map_err(|e| {
+                SystemAudioError::InitFailed(format!("Failed to start loopback stream: {e}"))
+            })?;
+
+            self.stream = Some(stream);
+            log::info!("System audio capture started (WASAPI loopback)");
+            Ok(())
         }
 
-        pub fn stop(&mut self) {}
+        pub fn stop(&mut self) {
+            if let Some(stream) = self.stream.take() {
+                drop(stream);
+                log::info!("System audio capture stopped (WASAPI loopback)");
+            }
+        }
 
+        /// Non-blocking receive of available system audio samples.
         pub fn try_recv_samples(&self) -> Option<Vec<f32>> {
-            None
+            self.sample_rx.as_ref()?.try_recv().ok()
         }
 
+        /// Drain all currently buffered system audio samples into a single Vec.
         pub fn drain_samples(&self) -> Vec<f32> {
-            Vec::new()
+            let mut all = Vec::new();
+            if let Some(ref rx) = self.sample_rx {
+                while let Ok(chunk) = rx.try_recv() {
+                    all.extend_from_slice(&chunk);
+                }
+            }
+            all
         }
 
+        /// List available system audio sources (output devices usable for loopback).
         pub fn list_sources() -> Vec<SystemAudioSource> {
-            Vec::new()
+            let host = cpal::default_host();
+            let default_name = host.default_output_device().and_then(|d| d.name().ok());
+
+            host.output_devices()
+                .map(|devices| {
+                    devices
+                        .filter_map(|d| {
+                            let name = d.name().ok()?;
+                            let is_default = default_name.as_deref() == Some(name.as_str());
+                            Some(SystemAudioSource {
+                                id: name.clone(),
+                                name,
+                                is_default,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    impl Drop for SystemAudioCapture {
+        fn drop(&mut self) {
+            self.stop();
         }
     }
 }
 
-// ─── Linux stub ──────────────────────────────────────────────────────────────
+// ─── Linux implementation (PulseAudio monitor via cpal) ─────────────────────
 
 #[cfg(target_os = "linux")]
 mod platform {
     use super::*;
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    use cpal::Stream;
 
-    pub struct SystemAudioCapture;
+    /// Check if a device name looks like a PulseAudio monitor source.
+    fn is_monitor_device(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        lower.contains("monitor")
+    }
+
+    pub struct SystemAudioCapture {
+        sample_rx: Option<mpsc::Receiver<Vec<f32>>>,
+        /// The monitor input device used for capture.
+        device: cpal::Device,
+        /// The native sample rate of the monitor device.
+        device_sample_rate: u32,
+        /// The sample rate requested by the caller (informational — no resampling here).
+        _target_sample_rate: u32,
+        /// The active capture stream (present while capturing).
+        stream: Option<Stream>,
+        /// Sender side kept alive so the channel doesn't close prematurely.
+        sample_tx: Option<mpsc::Sender<Vec<f32>>>,
+    }
 
     impl SystemAudioCapture {
-        pub fn new(_target_sample_rate: u32) -> Result<Self, SystemAudioError> {
-            // TODO: Implement PulseAudio monitor source capture
-            Err(SystemAudioError::UnsupportedPlatform)
+        /// Create a new system audio capture using a PulseAudio monitor source.
+        ///
+        /// We enumerate input devices and pick the first one whose name contains
+        /// "Monitor" — this is the standard PulseAudio convention for loopback
+        /// sources that mirror an output sink.
+        pub fn new(target_sample_rate: u32) -> Result<Self, SystemAudioError> {
+            // Use the default host; on Linux with PulseAudio installed, cpal will
+            // use the PulseAudio backend when available, falling back to ALSA.
+            let host = cpal::default_host();
+
+            let device = host
+                .input_devices()
+                .map_err(|e| {
+                    SystemAudioError::InitFailed(format!("Failed to enumerate input devices: {e}"))
+                })?
+                .find(|d| d.name().map(|n| is_monitor_device(&n)).unwrap_or(false))
+                .ok_or_else(|| {
+                    SystemAudioError::InitFailed(
+                        "No PulseAudio monitor source found. Ensure PulseAudio is running \
+                         and a monitor device is available (pactl list sources | grep Monitor)"
+                            .into(),
+                    )
+                })?;
+
+            let device_name = device.name().unwrap_or_else(|_| "unknown".into());
+            let config = device.default_input_config().map_err(|e| {
+                SystemAudioError::InitFailed(format!(
+                    "Failed to get default config for monitor device '{device_name}': {e}"
+                ))
+            })?;
+
+            let device_sample_rate = config.sample_rate().0;
+            log::info!(
+                "Linux monitor: device='{device_name}' rate={device_sample_rate}, target={target_sample_rate}"
+            );
+
+            let (sample_tx, sample_rx) = mpsc::channel::<Vec<f32>>();
+
+            Ok(Self {
+                sample_rx: Some(sample_rx),
+                device,
+                device_sample_rate,
+                _target_sample_rate: target_sample_rate,
+                stream: None,
+                sample_tx: Some(sample_tx),
+            })
+        }
+
+        /// Returns the actual sample rate of the monitor capture device.
+        pub fn sample_rate(&self) -> u32 {
+            self.device_sample_rate
         }
 
         pub fn start(&mut self) -> Result<(), SystemAudioError> {
-            Err(SystemAudioError::UnsupportedPlatform)
+            if self.stream.is_some() {
+                return Ok(());
+            }
+
+            let tx = self.sample_tx.clone().ok_or(SystemAudioError::NotRunning)?;
+            let channels = self
+                .device
+                .default_input_config()
+                .map_err(|e| {
+                    SystemAudioError::InitFailed(format!("Failed to query input config: {e}"))
+                })?
+                .channels() as usize;
+
+            let config = cpal::StreamConfig {
+                channels: channels as u16,
+                sample_rate: cpal::SampleRate(self.device_sample_rate),
+                buffer_size: cpal::BufferSize::Default,
+            };
+
+            let stream = self
+                .device
+                .build_input_stream(
+                    &config,
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        if data.is_empty() {
+                            return;
+                        }
+                        let mono = if channels == 1 {
+                            data.to_vec()
+                        } else {
+                            data.chunks_exact(channels)
+                                .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+                                .collect()
+                        };
+                        let _ = tx.send(mono);
+                    },
+                    |err| {
+                        log::error!("PulseAudio monitor stream error: {err}");
+                    },
+                    None,
+                )
+                .map_err(|e| {
+                    SystemAudioError::InitFailed(format!(
+                        "Failed to build PulseAudio monitor stream: {e}"
+                    ))
+                })?;
+
+            stream.play().map_err(|e| {
+                SystemAudioError::InitFailed(format!("Failed to start monitor stream: {e}"))
+            })?;
+
+            self.stream = Some(stream);
+            log::info!("System audio capture started (PulseAudio monitor)");
+            Ok(())
         }
 
-        pub fn stop(&mut self) {}
+        pub fn stop(&mut self) {
+            if let Some(stream) = self.stream.take() {
+                drop(stream);
+                log::info!("System audio capture stopped (PulseAudio monitor)");
+            }
+        }
 
+        /// Non-blocking receive of available system audio samples.
         pub fn try_recv_samples(&self) -> Option<Vec<f32>> {
-            None
+            self.sample_rx.as_ref()?.try_recv().ok()
         }
 
+        /// Drain all currently buffered system audio samples into a single Vec.
         pub fn drain_samples(&self) -> Vec<f32> {
-            Vec::new()
+            let mut all = Vec::new();
+            if let Some(ref rx) = self.sample_rx {
+                while let Ok(chunk) = rx.try_recv() {
+                    all.extend_from_slice(&chunk);
+                }
+            }
+            all
         }
 
+        /// List available system audio sources (PulseAudio monitor devices).
         pub fn list_sources() -> Vec<SystemAudioSource> {
-            Vec::new()
+            let host = cpal::default_host();
+
+            host.input_devices()
+                .map(|devices| {
+                    devices
+                        .filter_map(|d| {
+                            let name = d.name().ok()?;
+                            if !is_monitor_device(&name) {
+                                return None;
+                            }
+                            Some(SystemAudioSource {
+                                id: name.clone(),
+                                name,
+                                is_default: false,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .map(|mut sources| {
+                    // Mark the first monitor source as default
+                    if let Some(first) = sources.first_mut() {
+                        first.is_default = true;
+                    }
+                    sources
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    impl Drop for SystemAudioCapture {
+        fn drop(&mut self) {
+            self.stop();
         }
     }
 }
@@ -343,6 +656,10 @@ mod platform {
     impl SystemAudioCapture {
         pub fn new(_target_sample_rate: u32) -> Result<Self, SystemAudioError> {
             Err(SystemAudioError::UnsupportedPlatform)
+        }
+
+        pub fn sample_rate(&self) -> u32 {
+            0
         }
 
         pub fn start(&mut self) -> Result<(), SystemAudioError> {

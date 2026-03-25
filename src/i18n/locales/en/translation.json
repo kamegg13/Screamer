@@ -260,6 +260,15 @@
       "volume": {
         "title": "Volume",
         "description": "Adjust the volume of audio feedback sounds"
+      },
+      "systemAudio": {
+        "capture": "Capture System Audio",
+        "captureDescription": "Mix system audio with microphone input",
+        "gain": "System Audio Volume",
+        "gainDescription": "Adjust system audio level in the mix",
+        "source": "Audio Source",
+        "sourceDescription": "Select which output device to capture",
+        "noSources": "No system audio sources available"
       }
     },
     "advanced": {

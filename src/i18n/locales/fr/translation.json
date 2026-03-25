@@ -227,6 +227,15 @@
       "volume": {
         "title": "Volume",
         "description": "Ajuster le volume du signal sonore"
+      },
+      "systemAudio": {
+        "capture": "Capturer l'audio systeme",
+        "captureDescription": "Mixer l'audio systeme avec l'entree microphone",
+        "gain": "Volume audio systeme",
+        "gainDescription": "Ajuster le niveau audio systeme dans le mix",
+        "source": "Source audio",
+        "sourceDescription": "Selectionner le peripherique de sortie a capturer",
+        "noSources": "Aucune source audio systeme disponible"
       }
     },
     "advanced": {

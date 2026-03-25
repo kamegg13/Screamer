@@ -397,6 +397,7 @@ pub fn run(cli_args: CliArgs) {
         commands::gemini::change_gemini_api_key_setting,
         commands::gemini::change_gemini_model_setting,
         commands::ollama::check_ollama_status,
+        commands::ollama::fetch_ollama_models_detailed,
         helpers::clamshell::is_laptop,
     ]);
 

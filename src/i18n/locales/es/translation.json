@@ -226,7 +226,16 @@
       },
       "volume": {
         "title": "Volumen",
-        "description": "Ajusta el volumen de los sonidos de retroalimentación de audio"
+        "description": "Ajusta el volumen de los sonidos de retroalimentacion de audio"
+      },
+      "systemAudio": {
+        "capture": "Capturar audio del sistema",
+        "captureDescription": "Mezclar el audio del sistema con la entrada del microfono",
+        "gain": "Volumen del audio del sistema",
+        "gainDescription": "Ajustar el nivel de audio del sistema en la mezcla",
+        "source": "Fuente de audio",
+        "sourceDescription": "Seleccionar que dispositivo de salida capturar",
+        "noSources": "No hay fuentes de audio del sistema disponibles"
       }
     },
     "advanced": {

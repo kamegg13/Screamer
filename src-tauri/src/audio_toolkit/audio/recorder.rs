@@ -101,6 +101,7 @@ impl AudioRecorder {
         // Move system audio + mixer into the worker thread
         let mut system_audio = self.system_audio.take();
         let mixer = self.mixer.take();
+        let sys_audio_rate = system_audio.as_ref().map(|sa| sa.sample_rate());
 
         // Start system audio capture before spawning the worker
         if let Some(ref mut sa) = system_audio {
@@ -177,6 +178,7 @@ impl AudioRecorder {
                     pause_flag,
                     system_audio,
                     mixer,
+                    sys_audio_rate,
                 );
                 Ok(())
             }));
@@ -329,12 +331,34 @@ fn run_consumer(
     pause_flag: Option<Arc<AtomicBool>>,
     system_audio: Option<SystemAudioCapture>,
     mixer: Option<AudioMixer>,
+    system_audio_sample_rate: Option<u32>,
 ) {
     let mut frame_resampler = FrameResampler::new(
         in_sample_rate as usize,
         constants::WHISPER_SAMPLE_RATE as usize,
         Duration::from_millis(30),
     );
+
+    // If system audio is at a different sample rate than the mic, create a
+    // dedicated resampler to bring it to the mic rate before mixing.
+    let mut sys_audio_resampler: Option<FrameResampler> =
+        system_audio_sample_rate.and_then(|sys_rate| {
+            if sys_rate != in_sample_rate {
+                log::info!(
+                    "System audio resampler: {sys_rate} Hz -> {in_sample_rate} Hz (mic rate)"
+                );
+                Some(FrameResampler::new(
+                    sys_rate as usize,
+                    in_sample_rate as usize,
+                    Duration::from_millis(30),
+                ))
+            } else {
+                log::info!(
+                    "System audio rate matches mic rate ({sys_rate} Hz), no resampling needed"
+                );
+                None
+            }
+        });
 
     let mut processed_samples = Vec::<f32>::new();
     let mut recording = false;
@@ -448,7 +472,21 @@ fn run_consumer(
                 if sys_samples.is_empty() {
                     mixer.passthrough(&raw)
                 } else {
-                    mixer.mix(&raw, &sys_samples)
+                    // Resample system audio to mic rate if needed
+                    let resampled_sys = if let Some(ref mut resampler) = sys_audio_resampler {
+                        let mut out = Vec::with_capacity(sys_samples.len());
+                        resampler.push(&sys_samples, &mut |frame: &[f32]| {
+                            out.extend_from_slice(frame);
+                        });
+                        out
+                    } else {
+                        sys_samples
+                    };
+                    if resampled_sys.is_empty() {
+                        mixer.passthrough(&raw)
+                    } else {
+                        mixer.mix(&raw, &resampled_sys)
+                    }
                 }
             } else {
                 raw
@@ -488,7 +526,9 @@ mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
 
         let worker = std::thread::spawn(move || {
-            run_consumer(16_000, None, sample_rx, cmd_rx, None, None, None, None);
+            run_consumer(
+                16_000, None, sample_rx, cmd_rx, None, None, None, None, None,
+            );
         });
 
         cmd_tx.send(Cmd::Shutdown).expect("send shutdown");

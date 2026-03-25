@@ -3,7 +3,18 @@ use log::{debug, warn};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, REFERER, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use specta::Type;
 use std::time::Duration;
+
+#[derive(Serialize, Deserialize, Clone, Debug, Type)]
+pub struct OllamaModelInfo {
+    pub id: String,                     // raw model name for API calls
+    pub name: String,                   // display name
+    pub size: Option<u64>,              // bytes
+    pub parameter_size: Option<String>, // "8.0B", "3.2B"
+    pub quantization: Option<String>,   // "Q4_0", "Q8_0"
+    pub modified_at: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 struct ChatMessage {
@@ -423,6 +434,80 @@ async fn fetch_ollama_models(
             }
         }
     }
+
+    Ok(models)
+}
+
+/// Fetch models from Ollama with rich metadata using the native /api/tags endpoint.
+/// Returns structured `OllamaModelInfo` entries instead of plain names.
+pub async fn fetch_ollama_models_with_metadata(
+    provider: &PostProcessProvider,
+) -> Result<Vec<OllamaModelInfo>, String> {
+    let root = ollama_root_url(&provider.base_url);
+    let tags_url = format!("{}/api/tags", root);
+
+    debug!("Fetching Ollama models with metadata from: {}", tags_url);
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+
+    let response = client.get(&tags_url).send().await.map_err(|e| {
+        if e.is_connect() {
+            "Ollama is not running. Please start Ollama and try again.".to_string()
+        } else {
+            format!("Failed to fetch Ollama models: {}", e)
+        }
+    })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(format!(
+            "Ollama /api/tags request failed ({}): {}",
+            status, error_text
+        ));
+    }
+
+    let parsed: Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Ollama /api/tags response: {}", e))?;
+
+    let models = parsed
+        .get("models")
+        .and_then(|m| m.as_array())
+        .map(|models_arr| {
+            models_arr
+                .iter()
+                .filter_map(|entry| {
+                    let raw_name = entry.get("name")?.as_str()?;
+                    let details = entry.get("details");
+                    Some(OllamaModelInfo {
+                        id: raw_name.to_string(),
+                        name: raw_name.to_string(),
+                        size: entry.get("size").and_then(|s| s.as_u64()),
+                        parameter_size: details
+                            .and_then(|d| d.get("parameter_size"))
+                            .and_then(|p| p.as_str())
+                            .map(|s| s.to_string()),
+                        quantization: details
+                            .and_then(|d| d.get("quantization_level"))
+                            .and_then(|q| q.as_str())
+                            .map(|s| s.to_string()),
+                        modified_at: entry
+                            .get("modified_at")
+                            .and_then(|m| m.as_str())
+                            .map(|s| s.to_string()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     Ok(models)
 }
