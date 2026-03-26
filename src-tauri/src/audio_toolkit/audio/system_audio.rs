@@ -53,12 +53,25 @@ mod platform {
         Arc, Mutex,
     };
 
+    /// The native sample rate ScreenCaptureKit reliably delivers audio at.
+    /// Requesting other rates (e.g. 16kHz) can cause SCK to silently produce
+    /// no audio on some hardware. Always capture at 48kHz and let the caller
+    /// resample downstream if needed.
+    const SCK_NATIVE_SAMPLE_RATE: u32 = 48000;
+
+    /// The native channel count for ScreenCaptureKit audio capture.
+    /// SCK may not support mono output directly; always request stereo and
+    /// down-mix to mono in the callback.
+    const SCK_NATIVE_CHANNELS: u32 = 2;
+
     /// Handler that receives audio callbacks from ScreenCaptureKit and
     /// forwards mono f32 samples over an mpsc channel.
     struct AudioHandler {
         sample_tx: Mutex<mpsc::Sender<Vec<f32>>>,
-        channels: u32,
         running: Arc<AtomicBool>,
+        /// Tracks whether we have received the first valid audio buffer.
+        /// Early buffers from SCK can be empty or contain warmup artifacts.
+        warmed_up: AtomicBool,
     }
 
     impl SCStreamOutputTrait for AudioHandler {
@@ -75,63 +88,50 @@ mod platform {
                 None => return,
             };
 
-            // Extract f32 samples from all audio buffers and convert to mono
-            let mut mono_samples = Vec::new();
+            // Parse audio data using safe f32::from_le_bytes (no unsafe pointer casts).
+            // SCK delivers 32-bit float PCM in little-endian byte order.
+            let buffers: Vec<Vec<f32>> = audio_buffers
+                .iter()
+                .map(|buffer| {
+                    let data = buffer.data();
+                    data.chunks_exact(4)
+                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect::<Vec<f32>>()
+                })
+                .filter(|samples| !samples.is_empty())
+                .collect();
 
-            for buffer in &audio_buffers {
-                let raw_bytes = buffer.data();
-                if raw_bytes.is_empty() {
-                    continue;
-                }
-
-                // ScreenCaptureKit delivers f32 PCM (kAudioFormatFlagIsFloat | kAudioFormatFlagIsNonInterleaved)
-                assert!(
-                    raw_bytes.as_ptr() as usize % std::mem::align_of::<f32>() == 0,
-                    "Audio buffer is not f32-aligned"
-                );
-                assert!(
-                    raw_bytes.len() % std::mem::size_of::<f32>() == 0,
-                    "Audio buffer length is not a multiple of f32 size"
-                );
-                let float_samples: &[f32] = unsafe {
-                    std::slice::from_raw_parts(
-                        raw_bytes.as_ptr().cast::<f32>(),
-                        raw_bytes.len() / std::mem::size_of::<f32>(),
-                    )
-                };
-
-                if self.channels == 1 || audio_buffers.num_buffers() > 1 {
-                    // Non-interleaved: each AudioBuffer is one channel.
-                    // For mono output, we average all channel buffers.
-                    if mono_samples.is_empty() {
-                        mono_samples = float_samples.to_vec();
-                    } else {
-                        // Add to running sum for averaging
-                        let len = mono_samples.len().min(float_samples.len());
-                        for i in 0..len {
-                            mono_samples[i] += float_samples[i];
-                        }
-                    }
-                } else {
-                    // Interleaved stereo in a single buffer
-                    let channels = self.channels as usize;
-                    let frame_count = float_samples.len() / channels;
-                    mono_samples.reserve(frame_count);
-                    for frame in float_samples.chunks_exact(channels) {
-                        let mono = frame.iter().sum::<f32>() / channels as f32;
-                        mono_samples.push(mono);
-                    }
-                }
+            if buffers.is_empty() {
+                return;
             }
 
-            // If we summed multiple non-interleaved buffers, average them
-            let num_bufs = audio_buffers.num_buffers();
-            if num_bufs > 1 {
-                let divisor = num_bufs as f32;
-                for sample in &mut mono_samples {
-                    *sample /= divisor;
-                }
+            // Warmup detection: skip until we get the first non-empty buffer
+            if !self.warmed_up.load(Ordering::Relaxed) {
+                self.warmed_up.store(true, Ordering::Relaxed);
+                log::debug!("SCK audio warmup complete, first valid buffer received");
             }
+
+            // Convert to mono by handling both planar and interleaved layouts.
+            let mono_samples = if buffers.len() >= 2 {
+                // Planar layout: each buffer is a separate channel.
+                // Average corresponding samples across all channels.
+                let frame_count = buffers.iter().map(|b| b.len()).min().unwrap_or(0);
+                let num_channels = buffers.len() as f32;
+                (0..frame_count)
+                    .map(|i| {
+                        let sum: f32 = buffers.iter().map(|ch| ch[i]).sum();
+                        sum / num_channels
+                    })
+                    .collect::<Vec<f32>>()
+            } else {
+                // Single buffer with interleaved channels.
+                // De-interleave and average to mono.
+                let data = &buffers[0];
+                let channels = SCK_NATIVE_CHANNELS as usize;
+                data.chunks_exact(channels)
+                    .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+                    .collect::<Vec<f32>>()
+            };
 
             if !mono_samples.is_empty() {
                 if let Ok(tx) = self.sample_tx.lock() {
@@ -149,22 +149,12 @@ mod platform {
     }
 
     impl SystemAudioCapture {
-        /// Create a new system audio capture configured for the given sample rate.
+        /// Create a new system audio capture.
         ///
-        /// ScreenCaptureKit supports 8000, 16000, 24000, 48000 Hz.
-        /// We request mono + excludes_current_process_audio to avoid feedback.
-        pub fn new(target_sample_rate: u32) -> Result<Self, SystemAudioError> {
-            // Validate sample rate — SCK only supports specific values
-            let sck_rate = match target_sample_rate {
-                8000 | 16000 | 24000 | 48000 => target_sample_rate as i32,
-                _ => {
-                    log::warn!(
-                        "Unsupported SCK sample rate {target_sample_rate}, falling back to 48000"
-                    );
-                    48000
-                }
-            };
-
+        /// `target_sample_rate` is accepted for API compatibility but ignored:
+        /// ScreenCaptureKit always captures at 48kHz stereo (its native format).
+        /// The caller is responsible for resampling downstream if needed.
+        pub fn new(_target_sample_rate: u32) -> Result<Self, SystemAudioError> {
             // Get shareable content to find the primary display
             let content = SCShareableContent::get().map_err(|e| {
                 SystemAudioError::PermissionDenied(format!(
@@ -176,14 +166,17 @@ mod platform {
                 SystemAudioError::InitFailed("No display found for audio capture".into())
             })?;
 
-            // Audio-only configuration: smallest possible video (1x1) to minimize overhead
+            // Use real display dimensions and native audio settings.
+            // Using 1x1 video and non-native audio rates/channels can cause
+            // SCK to silently fail to deliver audio buffers.
             let config = SCStreamConfiguration::new()
-                .with_width(1)
-                .with_height(1)
+                .with_width(display.width())
+                .with_height(display.height())
                 .with_captures_audio(true)
-                .with_sample_rate(sck_rate)
-                .with_channel_count(1) // mono
-                .with_excludes_current_process_audio(true);
+                .with_sample_rate(SCK_NATIVE_SAMPLE_RATE as i32)
+                .with_channel_count(SCK_NATIVE_CHANNELS as i32);
+            // NOTE: Do NOT call .with_excludes_current_process_audio() —
+            // it can interfere with audio delivery on some macOS versions.
 
             let filter = SCContentFilter::create()
                 .with_display(&display)
@@ -195,25 +188,30 @@ mod platform {
 
             let handler = AudioHandler {
                 sample_tx: Mutex::new(sample_tx),
-                channels: 1,
                 running: running.clone(),
+                warmed_up: AtomicBool::new(false),
             };
 
             let mut stream = SCStream::new(&filter, &config);
             stream.add_output_handler(handler, SCStreamOutputType::Audio);
 
+            log::info!(
+                "SCK capture configured: {}x{}, {}Hz, {} channels",
+                display.width(),
+                display.height(),
+                SCK_NATIVE_SAMPLE_RATE,
+                SCK_NATIVE_CHANNELS,
+            );
+
             Ok(Self {
                 sample_rx: Some(sample_rx),
                 stream: Some(stream),
                 running,
-                actual_sample_rate: sck_rate as u32,
+                actual_sample_rate: SCK_NATIVE_SAMPLE_RATE,
             })
         }
 
-        /// Returns the actual sample rate used by ScreenCaptureKit.
-        ///
-        /// This may differ from the requested rate if SCK doesn't support
-        /// the target rate and fell back to 48000 Hz.
+        /// Returns the actual sample rate used by ScreenCaptureKit (always 48000 Hz).
         pub fn sample_rate(&self) -> u32 {
             self.actual_sample_rate
         }
