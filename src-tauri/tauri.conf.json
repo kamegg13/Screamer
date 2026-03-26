@@ -73,7 +73,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERBQTU3OTUyOTRCQ0VFRTAKUldUZzdyeVVVbm1sMm44Vm0wWG5CL0FTMmdsNEx5Y1hwQVFmV1RNMzVMT3VHSnhITWhoYkcwYjkK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYxM0MxQzMyRDg5MEUyODEKUldTQjRwRFlNaHc4OFZ5bzgxcHcvdmMxOWdSUXJxcnIyVWJ6RW5kWHFjajh6dDVua21xTjhDeHcK",
       "endpoints": [
         "https://github.com/kamegg13/Screamer/releases/latest/download/latest.json"
       ]
