@@ -210,9 +210,21 @@ fn create_audio_recorder(
         });
 
     // Optionally set up system audio capture + mixer
+    info!(
+        "System audio enabled: {}, mic_sample_rate={}",
+        settings.system_audio_enabled, mic_sample_rate
+    );
     if settings.system_audio_enabled {
+        info!(
+            "Creating SystemAudioCapture with mic_sample_rate={}",
+            mic_sample_rate
+        );
         match SystemAudioCapture::new(mic_sample_rate) {
             Ok(capture) => {
+                info!(
+                    "SystemAudioCapture created successfully, actual_sample_rate={}",
+                    capture.sample_rate()
+                );
                 let mixer = AudioMixer::new(1.0, settings.system_audio_gain);
                 recorder = recorder.with_system_audio(capture, mixer);
                 info!(
@@ -224,6 +236,8 @@ fn create_audio_recorder(
                 log::warn!("System audio capture unavailable, continuing with mic only: {e}");
             }
         }
+    } else {
+        info!("System audio capture is DISABLED in settings");
     }
 
     Ok(recorder)
@@ -412,17 +426,25 @@ impl AudioRecordingManager {
         }
         *did_mute_guard = false;
 
-        if let Some(rec) = self.recorder.lock().unwrap().as_mut() {
-            // If still recording, stop first.
-            if *self.is_recording.lock().unwrap() {
-                let _ = rec.stop();
-                *self.is_recording.lock().unwrap() = false;
+        {
+            let mut recorder_guard = self.recorder.lock().unwrap();
+            if let Some(rec) = recorder_guard.as_mut() {
+                // If still recording, stop first.
+                if *self.is_recording.lock().unwrap() {
+                    let _ = rec.stop();
+                    *self.is_recording.lock().unwrap() = false;
+                }
+                let _ = rec.close();
             }
-            let _ = rec.close();
+            // Drop the recorder so it gets recreated on next start.
+            // This is necessary because open() uses take() on system_audio,
+            // consuming it. Without recreation, subsequent recordings lose
+            // system audio capture.
+            *recorder_guard = None;
         }
 
         *open_flag = false;
-        debug!("Microphone stream stopped");
+        debug!("Microphone stream stopped, recorder dropped for fresh recreation");
     }
 
     /* ---------- mode switching --------------------------------------------- */
@@ -493,9 +515,17 @@ impl AudioRecordingManager {
     }
 
     pub fn update_selected_device(&self) -> Result<(), anyhow::Error> {
-        // If currently open, restart the microphone stream to use the new device
-        if *self.is_open.lock().unwrap() {
+        let was_open = *self.is_open.lock().unwrap();
+        if was_open {
             self.stop_microphone_stream();
+        }
+        // ALWAYS drop the old recorder so it gets recreated with fresh settings
+        // on the next start_microphone_stream() call.
+        // This is critical: settings like system_audio_enabled are read at
+        // recorder creation time, not at stream open time.
+        *self.recorder.lock().unwrap() = None;
+        info!("Recorder dropped — will be recreated with fresh settings on next start");
+        if was_open {
             self.start_microphone_stream()?;
         }
         Ok(())

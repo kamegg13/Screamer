@@ -49,7 +49,7 @@ mod platform {
     use super::*;
     use screencapturekit::prelude::*;
     use std::sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     };
 
@@ -72,6 +72,10 @@ mod platform {
         /// Tracks whether we have received the first valid audio buffer.
         /// Early buffers from SCK can be empty or contain warmup artifacts.
         warmed_up: AtomicBool,
+        /// Total number of buffers received from SCK (for periodic logging).
+        buffer_count: AtomicU64,
+        /// Total number of mono samples sent downstream.
+        total_samples: AtomicU64,
     }
 
     impl SCStreamOutputTrait for AudioHandler {
@@ -85,30 +89,55 @@ mod platform {
 
             let audio_buffers = match sample.audio_buffer_list() {
                 Some(list) => list,
-                None => return,
+                None => {
+                    log::warn!("SCK: audio_buffer_list() returned None");
+                    return;
+                }
             };
 
             // Parse audio data using safe f32::from_le_bytes (no unsafe pointer casts).
             // SCK delivers 32-bit float PCM in little-endian byte order.
+            let raw_buffer_count = audio_buffers.iter().count();
             let buffers: Vec<Vec<f32>> = audio_buffers
                 .iter()
-                .map(|buffer| {
+                .enumerate()
+                .map(|(i, buffer)| {
                     let data = buffer.data();
-                    data.chunks_exact(4)
+                    let samples: Vec<f32> = data
+                        .chunks_exact(4)
                         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                        .collect::<Vec<f32>>()
+                        .collect();
+                    let count = self.buffer_count.load(Ordering::Relaxed);
+                    if count < 3 {
+                        log::debug!(
+                            "SCK: raw audio_buffer[{i}]: raw_bytes={}, parsed_samples={}",
+                            data.len(),
+                            samples.len()
+                        );
+                    }
+                    samples
                 })
                 .filter(|samples| !samples.is_empty())
                 .collect();
 
             if buffers.is_empty() {
+                log::warn!(
+                    "SCK: no valid samples in buffer (raw_buffer_count={})",
+                    raw_buffer_count
+                );
                 return;
             }
+
+            let prev_count = self.buffer_count.fetch_add(1, Ordering::Relaxed);
 
             // Warmup detection: skip until we get the first non-empty buffer
             if !self.warmed_up.load(Ordering::Relaxed) {
                 self.warmed_up.store(true, Ordering::Relaxed);
-                log::debug!("SCK audio warmup complete, first valid buffer received");
+                log::info!(
+                    "SCK: First system audio buffer received! raw_buffers={}, samples_per_buffer={:?}",
+                    buffers.len(),
+                    buffers.iter().map(|b| b.len()).collect::<Vec<_>>()
+                );
             }
 
             // Convert to mono by handling both planar and interleaved layouts.
@@ -134,6 +163,23 @@ mod platform {
             };
 
             if !mono_samples.is_empty() {
+                let mono_len = mono_samples.len() as u64;
+                let new_total =
+                    self.total_samples.fetch_add(mono_len, Ordering::Relaxed) + mono_len;
+
+                // Log every 100th buffer with RMS for signal level diagnostics
+                if (prev_count + 1) % 100 == 0 {
+                    let rms = (mono_samples.iter().map(|s| s * s).sum::<f32>()
+                        / mono_samples.len() as f32)
+                        .sqrt();
+                    log::info!(
+                        "SCK: received {} buffers, {} total samples, rms={:.6}",
+                        prev_count + 1,
+                        new_total,
+                        rms
+                    );
+                }
+
                 if let Ok(tx) = self.sample_tx.lock() {
                     let _ = tx.send(mono_samples);
                 }
@@ -162,9 +208,16 @@ mod platform {
                 ))
             })?;
 
-            let display = content.displays().into_iter().next().ok_or_else(|| {
+            let displays = content.displays();
+            log::info!("SCK: found {} display(s)", displays.len());
+            let display = displays.into_iter().next().ok_or_else(|| {
                 SystemAudioError::InitFailed("No display found for audio capture".into())
             })?;
+            log::info!(
+                "SCK: using display width={}, height={}",
+                display.width(),
+                display.height()
+            );
 
             // Use real display dimensions and native audio settings.
             // Using 1x1 video and non-native audio rates/channels can cause
@@ -190,10 +243,13 @@ mod platform {
                 sample_tx: Mutex::new(sample_tx),
                 running: running.clone(),
                 warmed_up: AtomicBool::new(false),
+                buffer_count: AtomicU64::new(0),
+                total_samples: AtomicU64::new(0),
             };
 
             let mut stream = SCStream::new(&filter, &config);
             stream.add_output_handler(handler, SCStreamOutputType::Audio);
+            log::info!("SCK: SCStream created successfully, audio output handler added");
 
             log::info!(
                 "SCK capture configured: {}x{}, {}Hz, {} channels",
@@ -218,12 +274,14 @@ mod platform {
 
         pub fn start(&mut self) -> Result<(), SystemAudioError> {
             if let Some(ref mut stream) = self.stream {
+                log::info!("SCK: Starting SCStream capture...");
                 self.running.store(true, Ordering::Relaxed);
                 stream.start_capture().map_err(|e| {
                     self.running.store(false, Ordering::Relaxed);
+                    log::error!("SCK: start_capture() FAILED: {e:?}");
                     SystemAudioError::InitFailed(format!("Failed to start SCStream: {e:?}"))
                 })?;
-                log::info!("System audio capture started (ScreenCaptureKit)");
+                log::info!("SCK: start_capture() succeeded — system audio capture started");
                 Ok(())
             } else {
                 Err(SystemAudioError::NotRunning)
@@ -240,7 +298,11 @@ mod platform {
 
         /// Non-blocking receive of available system audio samples.
         pub fn try_recv_samples(&self) -> Option<Vec<f32>> {
-            self.sample_rx.as_ref()?.try_recv().ok()
+            let samples = self.sample_rx.as_ref()?.try_recv().ok();
+            if let Some(ref s) = samples {
+                log::trace!("SCK: try_recv_samples got {} samples", s.len());
+            }
+            samples
         }
 
         /// Drain all currently buffered system audio samples into a single Vec.
@@ -250,6 +312,9 @@ mod platform {
                 while let Ok(chunk) = rx.try_recv() {
                     all.extend_from_slice(&chunk);
                 }
+            }
+            if !all.is_empty() {
+                log::debug!("SCK: drain_samples returning {} samples", all.len());
             }
             all
         }

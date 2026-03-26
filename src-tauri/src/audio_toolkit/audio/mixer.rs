@@ -1,3 +1,64 @@
+use std::collections::VecDeque;
+use std::time::Duration;
+
+use super::resampler::FrameResampler;
+
+/// Accumulates audio samples from an async source and provides
+/// fixed-size chunks for synchronized mixing. Resamples internally
+/// if source rate differs from target rate.
+pub struct AudioAccumulator {
+    buffer: VecDeque<f32>,
+    resampler: Option<FrameResampler>,
+}
+
+impl AudioAccumulator {
+    pub fn new(source_rate: u32, target_rate: u32) -> Self {
+        let resampler = if source_rate != target_rate {
+            Some(FrameResampler::new(
+                source_rate as usize,
+                target_rate as usize,
+                Duration::from_millis(30),
+            ))
+        } else {
+            None
+        };
+        Self {
+            buffer: VecDeque::with_capacity(target_rate as usize), // ~1s
+            resampler,
+        }
+    }
+
+    /// Push raw samples from the async source. Resamples to target rate if needed.
+    pub fn push(&mut self, samples: &[f32]) {
+        if let Some(ref mut resampler) = self.resampler {
+            let buf = &mut self.buffer;
+            resampler.push(samples, &mut |resampled: &[f32]| {
+                buf.extend(resampled.iter());
+            });
+        } else {
+            self.buffer.extend(samples.iter());
+        }
+    }
+
+    /// Consume exactly `n` samples. Pads with silence if not enough buffered.
+    /// This guarantees the output always matches the mic chunk size.
+    pub fn consume(&mut self, n: usize) -> Vec<f32> {
+        let available = self.buffer.len().min(n);
+        let mut out: Vec<f32> = self.buffer.drain(..available).collect();
+        out.resize(n, 0.0); // silence-pad if needed
+        out
+    }
+
+    pub fn available(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Reset the accumulator, clearing all buffered samples.
+    pub fn reset(&mut self) {
+        self.buffer.clear();
+    }
+}
+
 /// Audio mixer that combines microphone and system audio streams.
 ///
 /// Both inputs must be mono f32 at the same sample rate.

@@ -15,7 +15,11 @@ use cpal::{
 };
 
 use crate::audio_toolkit::{
-    audio::{mixer::AudioMixer, system_audio::SystemAudioCapture, AudioVisualiser, FrameResampler},
+    audio::{
+        mixer::{AudioAccumulator, AudioMixer},
+        system_audio::SystemAudioCapture,
+        AudioVisualiser, FrameResampler,
+    },
     constants,
     vad::{self, VadFrame},
     VoiceActivityDetector,
@@ -339,26 +343,21 @@ fn run_consumer(
         Duration::from_millis(30),
     );
 
-    // If system audio is at a different sample rate than the mic, create a
-    // dedicated resampler to bring it to the mic rate before mixing.
-    let mut sys_audio_resampler: Option<FrameResampler> =
-        system_audio_sample_rate.and_then(|sys_rate| {
-            if sys_rate != in_sample_rate {
-                log::info!(
-                    "System audio resampler: {sys_rate} Hz -> {in_sample_rate} Hz (mic rate)"
-                );
-                Some(FrameResampler::new(
-                    sys_rate as usize,
-                    in_sample_rate as usize,
-                    Duration::from_millis(30),
-                ))
-            } else {
-                log::info!(
-                    "System audio rate matches mic rate ({sys_rate} Hz), no resampling needed"
-                );
-                None
-            }
-        });
+    // Real-time mixing: accumulator resamples system audio to mic rate so we
+    // can mix sample-by-sample before the shared resampler → VAD pipeline.
+    let mut sys_accumulator = if let Some(rate) = system_audio_sample_rate {
+        Some(AudioAccumulator::new(rate, in_sample_rate))
+    } else {
+        None
+    };
+
+    log::info!(
+        "run_consumer: mic_sample_rate={}, system_audio_present={}, system_audio_rate={:?}, mixer_present={}",
+        in_sample_rate,
+        system_audio.is_some(),
+        system_audio_sample_rate,
+        mixer.is_some()
+    );
 
     let mut processed_samples = Vec::<f32>::new();
     let mut recording = false;
@@ -395,56 +394,75 @@ fn run_consumer(
         }
     }
 
-    fn handle_command(
-        cmd: Cmd,
+    /// Handle a Stop command: drain remaining audio, flush resampler, return samples.
+    fn handle_stop(
         sample_rx: &mpsc::Receiver<Vec<f32>>,
         frame_resampler: &mut FrameResampler,
-        processed_samples: &mut Vec<f32>,
-        recording: &mut bool,
         vad: &Option<Arc<Mutex<Box<dyn vad::VoiceActivityDetector>>>>,
-        visualizer: &mut AudioVisualiser,
-    ) -> bool {
-        match cmd {
-            Cmd::Start => {
-                processed_samples.clear();
-                *recording = true;
-                visualizer.reset();
-                if let Some(v) = vad {
-                    v.lock().unwrap().reset();
+        processed_samples: &mut Vec<f32>,
+        system_audio: &Option<SystemAudioCapture>,
+        sys_accumulator: &mut Option<AudioAccumulator>,
+        mixer: &Option<AudioMixer>,
+        reply_tx: mpsc::Sender<Vec<f32>>,
+    ) {
+        // Drain remaining mic samples and mix in real-time
+        while let Ok(remaining) = sample_rx.try_recv() {
+            // Drain system audio into accumulator
+            if let (Some(ref sa), Some(ref mut acc)) = (system_audio, sys_accumulator.as_mut()) {
+                let sys_samples = sa.drain_samples();
+                if !sys_samples.is_empty() {
+                    acc.push(&sys_samples);
                 }
-                false
             }
-            Cmd::Stop(reply_tx) => {
-                *recording = false;
 
-                while let Ok(remaining) = sample_rx.try_recv() {
-                    frame_resampler.push(&remaining, &mut |frame: &[f32]| {
-                        handle_frame(frame, true, vad, processed_samples)
-                    });
-                }
+            // Mix mic + system audio in real-time
+            let mixed = if let (Some(ref mut acc), Some(ref m)) = (sys_accumulator.as_mut(), mixer)
+            {
+                let sys_chunk = acc.consume(remaining.len());
+                m.mix(&remaining, &sys_chunk)
+            } else {
+                remaining
+            };
 
-                frame_resampler
-                    .finish(&mut |frame: &[f32]| handle_frame(frame, true, vad, processed_samples));
-
-                let _ = reply_tx.send(std::mem::take(processed_samples));
-                false
-            }
-            Cmd::Shutdown => true,
+            frame_resampler.push(&mixed, &mut |frame: &[f32]| {
+                handle_frame(frame, true, vad, processed_samples)
+            });
         }
+        frame_resampler
+            .finish(&mut |frame: &[f32]| handle_frame(frame, true, vad, processed_samples));
+
+        let _ = reply_tx.send(std::mem::take(processed_samples));
     }
 
     loop {
+        // --- process pending commands ----------------------------------- //
         while let Ok(cmd) = cmd_rx.try_recv() {
-            if handle_command(
-                cmd,
-                &sample_rx,
-                &mut frame_resampler,
-                &mut processed_samples,
-                &mut recording,
-                &vad,
-                &mut visualizer,
-            ) {
-                return;
+            match cmd {
+                Cmd::Start => {
+                    processed_samples.clear();
+                    if let Some(ref mut acc) = sys_accumulator {
+                        acc.reset();
+                    }
+                    recording = true;
+                    visualizer.reset();
+                    if let Some(v) = &vad {
+                        v.lock().unwrap().reset();
+                    }
+                }
+                Cmd::Stop(reply_tx) => {
+                    recording = false;
+                    handle_stop(
+                        &sample_rx,
+                        &mut frame_resampler,
+                        &vad,
+                        &mut processed_samples,
+                        &system_audio,
+                        &mut sys_accumulator,
+                        &mixer,
+                        reply_tx,
+                    );
+                }
+                Cmd::Shutdown => return,
             }
         }
 
@@ -461,37 +479,43 @@ fn run_consumer(
             }
         }
 
-        // ---------- mixing + pipeline -------------------------------------- //
+        // ---------- real-time mix + resampler + VAD pipeline ------------- //
         let is_paused = pause_flag
             .as_ref()
             .map_or(false, |f| f.load(Ordering::Relaxed));
         if !is_paused {
-            // Mix system audio into the mic signal if available
-            let mixed = if let (Some(ref sa), Some(ref mixer)) = (&system_audio, &mixer) {
+            // 1. Drain all pending system audio into the accumulator
+            if let (Some(ref sa), Some(ref mut acc)) = (&system_audio, &mut sys_accumulator) {
                 let sys_samples = sa.drain_samples();
-                if sys_samples.is_empty() {
-                    mixer.passthrough(&raw)
-                } else {
-                    // Resample system audio to mic rate if needed
-                    let resampled_sys = if let Some(ref mut resampler) = sys_audio_resampler {
-                        let mut out = Vec::with_capacity(sys_samples.len());
-                        resampler.push(&sys_samples, &mut |frame: &[f32]| {
-                            out.extend_from_slice(frame);
-                        });
-                        out
-                    } else {
-                        sys_samples
-                    };
-                    if resampled_sys.is_empty() {
-                        mixer.passthrough(&raw)
-                    } else {
-                        mixer.mix(&raw, &resampled_sys)
+                if !sys_samples.is_empty() {
+                    acc.push(&sys_samples);
+
+                    // Log periodically for diagnostics
+                    static DRAIN_LOG_COUNTER: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(0);
+                    let count =
+                        DRAIN_LOG_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if count % 500 == 0 {
+                        log::info!(
+                            "SysAudio[{}]: drained {} samples, accumulator={} samples, recording={}",
+                            count,
+                            sys_samples.len(),
+                            acc.available(),
+                            recording,
+                        );
                     }
                 }
+            }
+
+            // 2. Mix mic + system audio in real-time (equal-length, silence-padded)
+            let mixed = if let (Some(ref mut acc), Some(ref m)) = (&mut sys_accumulator, &mixer) {
+                let sys_chunk = acc.consume(raw.len());
+                m.mix(&raw, &sys_chunk)
             } else {
                 raw
             };
 
+            // 3. Continue with existing pipeline: resampler → VAD → output buffer
             frame_resampler.push(&mixed, &mut |frame: &[f32]| {
                 handle_frame(frame, recording, &vad, &mut processed_samples)
             });
@@ -499,16 +523,32 @@ fn run_consumer(
 
         // non-blocking check for a command
         while let Ok(cmd) = cmd_rx.try_recv() {
-            if handle_command(
-                cmd,
-                &sample_rx,
-                &mut frame_resampler,
-                &mut processed_samples,
-                &mut recording,
-                &vad,
-                &mut visualizer,
-            ) {
-                return;
+            match cmd {
+                Cmd::Start => {
+                    processed_samples.clear();
+                    if let Some(ref mut acc) = sys_accumulator {
+                        acc.reset();
+                    }
+                    recording = true;
+                    visualizer.reset();
+                    if let Some(v) = &vad {
+                        v.lock().unwrap().reset();
+                    }
+                }
+                Cmd::Stop(reply_tx) => {
+                    recording = false;
+                    handle_stop(
+                        &sample_rx,
+                        &mut frame_resampler,
+                        &vad,
+                        &mut processed_samples,
+                        &system_audio,
+                        &mut sys_accumulator,
+                        &mixer,
+                        reply_tx,
+                    );
+                }
+                Cmd::Shutdown => return,
             }
         }
     }
