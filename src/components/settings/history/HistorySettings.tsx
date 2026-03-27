@@ -18,6 +18,15 @@ import { commands, type HistoryEntry } from "@/bindings";
 import { formatDateTime } from "@/utils/dateFormat";
 import { useOsType } from "@/hooks/useOsType";
 import { useModelStore } from "@/stores/modelStore";
+import { DiarizedText } from "./DiarizedText";
+
+/**
+ * Extended history entry with optional diarized_text field.
+ * The backend includes this field but it is not yet in the auto-generated bindings.
+ */
+interface HistoryEntryWithDiarization extends HistoryEntry {
+  diarized_text?: string | null;
+}
 
 interface OpenRecordingsButtonProps {
   onClick: () => void;
@@ -43,14 +52,16 @@ const OpenRecordingsButton: React.FC<OpenRecordingsButtonProps> = ({
 export const HistorySettings: React.FC = () => {
   const { t } = useTranslation();
   const osType = useOsType();
-  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [historyEntries, setHistoryEntries] = useState<
+    HistoryEntryWithDiarization[]
+  >([]);
   const [loading, setLoading] = useState(true);
 
   const loadHistoryEntries = useCallback(async () => {
     try {
       const result = await commands.getHistoryEntries();
       if (result.status === "ok") {
-        setHistoryEntries(result.data);
+        setHistoryEntries(result.data as HistoryEntryWithDiarization[]);
       }
     } catch (error) {
       console.error("Failed to load history entries:", error);
@@ -214,7 +225,9 @@ export const HistorySettings: React.FC = () => {
                 onToggleSaved={() => toggleSaved(entry.id)}
                 onCopyText={() =>
                   copyToClipboard(
-                    entry.post_processed_text ?? entry.transcription_text,
+                    entry.post_processed_text ??
+                      entry.diarized_text ??
+                      entry.transcription_text,
                   )
                 }
                 getAudioUrl={getAudioUrl}
@@ -229,7 +242,7 @@ export const HistorySettings: React.FC = () => {
 };
 
 interface HistoryEntryProps {
-  entry: HistoryEntry;
+  entry: HistoryEntryWithDiarization;
   onToggleSaved: () => void;
   onCopyText: () => void;
   getAudioUrl: (fileName: string) => Promise<string | null>;
@@ -407,10 +420,18 @@ const HistoryEntryComponent: React.FC<HistoryEntryProps> = ({
             <span className="text-xs font-medium text-text/50 mb-0.5 block">
               {t("settings.history.originalTranscript")}
             </span>
-            <p className="italic text-text/50 text-sm select-text cursor-text">
-              {entry.transcription_text}
-            </p>
+            {entry.diarized_text ? (
+              <DiarizedText text={entry.diarized_text} />
+            ) : (
+              <p className="italic text-text/50 text-sm select-text cursor-text">
+                {entry.transcription_text}
+              </p>
+            )}
           </div>
+        </div>
+      ) : entry.diarized_text ? (
+        <div className="pb-2">
+          <DiarizedText text={entry.diarized_text} />
         </div>
       ) : (
         <p className="italic text-text/90 text-sm pb-2 select-text cursor-text">

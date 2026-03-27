@@ -15,11 +15,14 @@ import { LongAudioModelSettings } from "./LongAudioModelSettings";
 import { SystemAudioToggle } from "../SystemAudioToggle";
 import { SystemAudioGainSlider } from "../SystemAudioGainSlider";
 import { SystemAudioSourceSelector } from "../SystemAudioSourceSelector";
+import { DiarizationToggle } from "../DiarizationToggle";
+import { MaxSpeakersSelector } from "../MaxSpeakersSelector";
 
 export const GeneralSettings: React.FC = () => {
   const { t } = useTranslation();
   const { audioFeedbackEnabled } = useSettings();
   const [systemAudioEnabled, setSystemAudioEnabled] = useState(false);
+  const [diarizationEnabled, setDiarizationEnabled] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -31,6 +34,15 @@ export const GeneralSettings: React.FC = () => {
       })
       .catch((error) => {
         console.error("Failed to get system audio enabled state:", error);
+      });
+    invoke<boolean>("get_diarization_enabled")
+      .then((value) => {
+        if (!cancelled) {
+          setDiarizationEnabled(value);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to get diarization enabled state:", error);
       });
     return () => {
       cancelled = true;
@@ -72,6 +84,16 @@ export const GeneralSettings: React.FC = () => {
               grouped={true}
             />
           </>
+        )}
+      </SettingsGroup>
+      <SettingsGroup title={t("settings.diarization.title")}>
+        <DiarizationToggle
+          descriptionMode="tooltip"
+          grouped={true}
+          onToggle={setDiarizationEnabled}
+        />
+        {diarizationEnabled && (
+          <MaxSpeakersSelector descriptionMode="tooltip" grouped={true} />
         )}
       </SettingsGroup>
     </div>

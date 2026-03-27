@@ -206,6 +206,14 @@
         "description": "Maintenez pour enregistrer, relâchez pour arrêter"
       }
     },
+    "diarization": {
+      "title": "Diarisation des locuteurs",
+      "enable": "Activer la diarisation des locuteurs",
+      "enableDescription": "Identifier et distinguer les différents locuteurs dans les transcriptions",
+      "maxSpeakers": "Nombre maximum de locuteurs",
+      "maxSpeakersDescription": "Nombre maximum de locuteurs à détecter",
+      "modelsNotAvailable": "Modèles de diarisation introuvables"
+    },
     "sound": {
       "title": "Son",
       "microphone": {

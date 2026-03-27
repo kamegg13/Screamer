@@ -27,6 +27,7 @@ use tauri_specta::{collect_commands, Builder};
 
 use env_filter::Builder as EnvFilterBuilder;
 use managers::audio::AudioRecordingManager;
+use managers::diarization::DiarizationManager;
 use managers::history::HistoryManager;
 use managers::model::ModelManager;
 use managers::transcription::TranscriptionManager;
@@ -129,11 +130,23 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     let history_manager =
         Arc::new(HistoryManager::new(app_handle).expect("Failed to initialize history manager"));
 
+    // Initialize diarization manager with model paths from resources
+    let diarization_manager = {
+        let resource_dir = app_handle
+            .path()
+            .resolve("resources/models", tauri::path::BaseDirectory::Resource)
+            .expect("Failed to resolve models resource directory");
+        let segmentation_path = resource_dir.join("segmentation-3.0.onnx");
+        let embedding_path = resource_dir.join("wespeaker_en_voxceleb_CAM++.onnx");
+        Arc::new(DiarizationManager::new(segmentation_path, embedding_path))
+    };
+
     // Add managers to Tauri's managed state
     app_handle.manage(recording_manager.clone());
     app_handle.manage(model_manager.clone());
     app_handle.manage(transcription_manager.clone());
     app_handle.manage(history_manager.clone());
+    app_handle.manage(diarization_manager.clone());
 
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
@@ -394,6 +407,11 @@ pub fn run(cli_args: CliArgs) {
         commands::history::update_history_limit,
         commands::history::update_recording_retention_period,
         commands::history::reprocess_history_entry,
+        commands::diarization::get_diarization_enabled,
+        commands::diarization::set_diarization_enabled,
+        commands::diarization::get_diarization_max_speakers,
+        commands::diarization::set_diarization_max_speakers,
+        commands::diarization::get_diarization_models_available,
         commands::gemini::change_gemini_api_key_setting,
         commands::gemini::change_gemini_model_setting,
         commands::ollama::check_ollama_status,

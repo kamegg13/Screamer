@@ -206,6 +206,14 @@
         "description": "Mantén presionado para grabar, suelta para detener"
       }
     },
+    "diarization": {
+      "title": "Diarización de hablantes",
+      "enable": "Activar diarización de hablantes",
+      "enableDescription": "Identificar y etiquetar diferentes hablantes en las transcripciones",
+      "maxSpeakers": "Número máximo de hablantes",
+      "maxSpeakersDescription": "Número máximo de hablantes a detectar",
+      "modelsNotAvailable": "Modelos de diarización no encontrados"
+    },
     "sound": {
       "title": "Sonido",
       "microphone": {

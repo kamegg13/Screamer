@@ -33,6 +33,7 @@ static MIGRATIONS: &[M] = &[
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_prompt TEXT;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN post_process_action_key INTEGER;"),
     M::up("ALTER TABLE transcription_history ADD COLUMN model_name TEXT;"),
+    M::up("ALTER TABLE transcription_history ADD COLUMN diarized_text TEXT;"),
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -47,6 +48,7 @@ pub struct HistoryEntry {
     pub post_process_prompt: Option<String>,
     pub post_process_action_key: Option<u8>,
     pub model_name: Option<String>,
+    pub diarized_text: Option<String>,
 }
 
 pub struct HistoryManager {
@@ -189,6 +191,7 @@ impl HistoryManager {
         post_process_prompt: Option<String>,
         post_process_action_key: Option<u8>,
         model_name: Option<String>,
+        diarized_text: Option<String>,
     ) -> Result<()> {
         let timestamp = Utc::now().timestamp();
         let file_name = format!("handy-{}.wav", timestamp);
@@ -208,6 +211,7 @@ impl HistoryManager {
             post_process_prompt,
             post_process_action_key,
             model_name,
+            diarized_text,
         )?;
 
         // Clean up old entries
@@ -231,11 +235,12 @@ impl HistoryManager {
         post_process_prompt: Option<String>,
         post_process_action_key: Option<u8>,
         model_name: Option<String>,
+        diarized_text: Option<String>,
     ) -> Result<()> {
         let conn = self.get_connection()?;
         conn.execute(
-            "INSERT INTO transcription_history (file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_action_key, model_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![file_name, timestamp, false, title, transcription_text, post_processed_text, post_process_prompt, post_process_action_key.map(|k| k as i64), model_name],
+            "INSERT INTO transcription_history (file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_action_key, model_name, diarized_text) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![file_name, timestamp, false, title, transcription_text, post_processed_text, post_process_prompt, post_process_action_key.map(|k| k as i64), model_name, diarized_text],
         )?;
 
         debug!("Saved transcription to database");
@@ -365,7 +370,7 @@ impl HistoryManager {
     pub async fn get_history_entries(&self) -> Result<Vec<HistoryEntry>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_action_key, model_name FROM transcription_history ORDER BY timestamp DESC"
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_action_key, model_name, diarized_text FROM transcription_history ORDER BY timestamp DESC"
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -382,6 +387,7 @@ impl HistoryManager {
                     .get::<_, Option<i64>>("post_process_action_key")?
                     .and_then(|v| u8::try_from(v).ok()),
                 model_name: row.get("model_name")?,
+                diarized_text: row.get("diarized_text")?,
             })
         })?;
 
@@ -400,7 +406,7 @@ impl HistoryManager {
 
     fn get_latest_entry_with_conn(conn: &Connection) -> Result<Option<HistoryEntry>> {
         let mut stmt = conn.prepare(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_action_key, model_name
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_action_key, model_name, diarized_text
              FROM transcription_history
              ORDER BY timestamp DESC
              LIMIT 1",
@@ -421,6 +427,7 @@ impl HistoryManager {
                         .get::<_, Option<i64>>("post_process_action_key")?
                         .and_then(|v| u8::try_from(v).ok()),
                     model_name: row.get("model_name")?,
+                    diarized_text: row.get("diarized_text")?,
                 })
             })
             .optional()?;
@@ -483,7 +490,7 @@ impl HistoryManager {
     pub async fn get_entry_by_id(&self, id: i64) -> Result<Option<HistoryEntry>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_action_key, model_name
+            "SELECT id, file_name, timestamp, saved, title, transcription_text, post_processed_text, post_process_prompt, post_process_action_key, model_name, diarized_text
              FROM transcription_history WHERE id = ?1",
         )?;
 
@@ -502,6 +509,7 @@ impl HistoryManager {
                         .get::<_, Option<i64>>("post_process_action_key")?
                         .and_then(|v| u8::try_from(v).ok()),
                     model_name: row.get("model_name")?,
+                    diarized_text: row.get("diarized_text")?,
                 })
             })
             .optional()?;
@@ -569,7 +577,8 @@ mod tests {
                 post_processed_text TEXT,
                 post_process_prompt TEXT,
                 post_process_action_key INTEGER,
-                model_name TEXT
+                model_name TEXT,
+                diarized_text TEXT
             );",
         )
         .expect("create transcription_history table");

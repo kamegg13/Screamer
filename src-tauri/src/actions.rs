@@ -2,6 +2,7 @@
 use crate::apple_intelligence;
 use crate::audio_feedback::{play_feedback_sound, play_feedback_sound_blocking, SoundType};
 use crate::managers::audio::AudioRecordingManager;
+use crate::managers::diarization::{format_diarized_text, DiarizationManager};
 use crate::managers::history::HistoryManager;
 use crate::managers::transcription::TranscriptionManager;
 use crate::settings::{get_settings, AppSettings, APPLE_INTELLIGENCE_PROVIDER_ID};
@@ -530,6 +531,7 @@ impl ShortcutAction for TranscribeAction {
         let rm = Arc::clone(&app.state::<Arc<AudioRecordingManager>>());
         let tm = Arc::clone(&app.state::<Arc<TranscriptionManager>>());
         let hm = Arc::clone(&app.state::<Arc<HistoryManager>>());
+        let dm = Arc::clone(&app.state::<Arc<DiarizationManager>>());
 
         change_tray_icon(app, TrayIconState::Transcribing);
         show_transcribing_overlay(app);
@@ -737,6 +739,40 @@ impl ShortcutAction for TranscribeAction {
                             change_tray_icon(&ah, TrayIconState::Idle);
                         }
 
+                        // Run diarization if enabled
+                        let diarized_text = {
+                            let diar_settings = get_settings(&ah);
+                            if diar_settings.diarization_enabled
+                                && !transcription.is_empty()
+                                && dm.models_available()
+                            {
+                                let max_speakers = diar_settings.diarization_max_speakers as usize;
+                                match dm.diarize(&samples_clone, 16000, max_speakers) {
+                                    Ok(diar_segments) => {
+                                        let diarized = format_diarized_text(
+                                            &transcription,
+                                            &diar_segments,
+                                            duration_seconds as f64,
+                                        );
+                                        if diarized != transcription {
+                                            Some(diarized)
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "Diarization failed, using plain transcription: {}",
+                                            e
+                                        );
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            }
+                        };
+
                         // Always save to history for non-empty results or meaningful audio duration
                         if !transcription.is_empty() || duration_seconds > 1.0 {
                             let hm_clone = Arc::clone(&hm);
@@ -756,6 +792,7 @@ impl ShortcutAction for TranscribeAction {
                                         post_process_prompt,
                                         action_key_for_history,
                                         model_name_for_history,
+                                        diarized_text,
                                     )
                                     .await
                                 {

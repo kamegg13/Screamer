@@ -239,6 +239,14 @@
         "alreadySaved": "This model is already saved."
       }
     },
+    "diarization": {
+      "title": "Speaker Diarization",
+      "enable": "Enable Speaker Diarization",
+      "enableDescription": "Identify and label different speakers in transcriptions",
+      "maxSpeakers": "Maximum Speakers",
+      "maxSpeakersDescription": "Maximum number of speakers to detect",
+      "modelsNotAvailable": "Diarization models not found"
+    },
     "sound": {
       "title": "Sound",
       "microphone": {

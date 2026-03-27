@@ -206,6 +206,14 @@
         "description": "Giữ để ghi âm, thả để dừng"
       }
     },
+    "diarization": {
+      "title": "Phân biệt người nói",
+      "enable": "Bật phân biệt người nói",
+      "enableDescription": "Nhận diện và gắn nhãn các người nói khác nhau trong bản chép lời",
+      "maxSpeakers": "Số người nói tối đa",
+      "maxSpeakersDescription": "Số lượng người nói tối đa cần phát hiện",
+      "modelsNotAvailable": "Không tìm thấy mô hình phân biệt người nói"
+    },
     "sound": {
       "title": "Âm thanh",
       "microphone": {

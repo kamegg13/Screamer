@@ -395,6 +395,10 @@ pub struct AppSettings {
     pub system_audio_enabled: bool,
     #[serde(default = "default_system_audio_gain")]
     pub system_audio_gain: f32,
+    #[serde(default)]
+    pub diarization_enabled: bool,
+    #[serde(default = "default_diarization_max_speakers")]
+    pub diarization_max_speakers: u32,
 }
 
 fn default_model() -> String {
@@ -639,6 +643,10 @@ fn default_system_audio_gain() -> f32 {
     0.5
 }
 
+fn default_diarization_max_speakers() -> u32 {
+    6
+}
+
 fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
     let mut changed = false;
     for provider in default_post_process_providers() {
@@ -862,6 +870,8 @@ pub fn get_default_settings() -> AppSettings {
         saved_processing_models: Vec::new(),
         system_audio_enabled: default_system_audio_enabled(),
         system_audio_gain: default_system_audio_gain(),
+        diarization_enabled: false,
+        diarization_max_speakers: default_diarization_max_speakers(),
     }
 }
 
