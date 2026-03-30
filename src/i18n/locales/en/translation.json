@@ -239,6 +239,13 @@
         "alreadySaved": "This model is already saved."
       }
     },
+    "localApi": {
+      "title": "Local API",
+      "enable": "Enable Local API Server",
+      "enableDescription": "Expose an OpenAI-compatible transcription endpoint on your local network",
+      "port": "Port",
+      "portDescription": "TCP port for the local API server (requires restart if changed while running)"
+    },
     "diarization": {
       "title": "Speaker Diarization",
       "enable": "Enable Speaker Diarization",

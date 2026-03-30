@@ -1,3 +1,4 @@
+pub mod api;
 pub mod audio;
 pub mod diarization;
 pub mod gemini;

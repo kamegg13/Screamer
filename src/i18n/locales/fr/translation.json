@@ -206,6 +206,13 @@
         "description": "Maintenez pour enregistrer, relâchez pour arrêter"
       }
     },
+    "localApi": {
+      "title": "API locale",
+      "enable": "Activer le serveur API local",
+      "enableDescription": "Exposer un point d'accès de transcription compatible OpenAI sur votre réseau local",
+      "port": "Port",
+      "portDescription": "Port TCP pour le serveur API local (nécessite un redémarrage si modifié en cours d'exécution)"
+    },
     "diarization": {
       "title": "Diarisation des locuteurs",
       "enable": "Activer la diarisation des locuteurs",

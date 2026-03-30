@@ -399,6 +399,10 @@ pub struct AppSettings {
     pub diarization_enabled: bool,
     #[serde(default = "default_diarization_max_speakers")]
     pub diarization_max_speakers: u32,
+    #[serde(default)]
+    pub local_api_enabled: bool,
+    #[serde(default = "default_local_api_port")]
+    pub local_api_port: u16,
 }
 
 fn default_model() -> String {
@@ -647,6 +651,10 @@ fn default_diarization_max_speakers() -> u32 {
     6
 }
 
+fn default_local_api_port() -> u16 {
+    5500
+}
+
 fn ensure_post_process_defaults(settings: &mut AppSettings) -> bool {
     let mut changed = false;
     for provider in default_post_process_providers() {
@@ -872,6 +880,8 @@ pub fn get_default_settings() -> AppSettings {
         system_audio_gain: default_system_audio_gain(),
         diarization_enabled: false,
         diarization_max_speakers: default_diarization_max_speakers(),
+        local_api_enabled: false,
+        local_api_port: default_local_api_port(),
     }
 }
 

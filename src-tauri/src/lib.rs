@@ -13,6 +13,7 @@ mod input;
 mod llm_client;
 mod managers;
 mod overlay;
+mod server;
 mod settings;
 mod shortcut;
 mod signal_handle;
@@ -148,6 +149,21 @@ fn initialize_core_logic(app_handle: &AppHandle) {
     app_handle.manage(history_manager.clone());
     app_handle.manage(diarization_manager.clone());
 
+    // Initialize local API server (disabled by default)
+    {
+        let settings = settings::get_settings(app_handle);
+        let mut api_server = server::ApiServer::new(settings.local_api_port);
+        if settings.local_api_enabled {
+            let app_handle_for_settings = app_handle.clone();
+            api_server.start(
+                transcription_manager.clone(),
+                diarization_manager.clone(),
+                move || settings::get_settings(&app_handle_for_settings),
+            );
+        }
+        app_handle.manage(std::sync::Mutex::new(api_server));
+    }
+
     // Note: Shortcuts are NOT initialized here.
     // The frontend is responsible for calling the `initialize_shortcuts` command
     // after permissions are confirmed (on macOS) or after onboarding completes.
@@ -270,6 +286,13 @@ fn shutdown_core_logic(app_handle: &AppHandle, reason: &str) {
 
     if let Some(audio_manager) = app_handle.try_state::<Arc<AudioRecordingManager>>() {
         audio_manager.shutdown();
+    }
+
+    // Stop the local API server if running
+    if let Some(api_server) = app_handle.try_state::<std::sync::Mutex<server::ApiServer>>() {
+        if let Ok(mut server) = api_server.lock() {
+            server.stop();
+        }
     }
 
     if let Some(transcription_manager) = app_handle.try_state::<Arc<TranscriptionManager>>() {
@@ -416,6 +439,10 @@ pub fn run(cli_args: CliArgs) {
         commands::gemini::change_gemini_model_setting,
         commands::ollama::check_ollama_status,
         commands::ollama::fetch_ollama_models_detailed,
+        commands::api::get_local_api_enabled,
+        commands::api::set_local_api_enabled,
+        commands::api::get_local_api_port,
+        commands::api::set_local_api_port,
         helpers::clamshell::is_laptop,
     ]);
 

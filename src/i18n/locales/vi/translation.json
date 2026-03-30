@@ -206,6 +206,13 @@
         "description": "Giữ để ghi âm, thả để dừng"
       }
     },
+    "localApi": {
+      "title": "API cục bộ",
+      "enable": "Bật máy chủ API cục bộ",
+      "enableDescription": "Cung cấp điểm truy cập chép lời tương thích OpenAI trên mạng nội bộ của bạn",
+      "port": "Cổng",
+      "portDescription": "Cổng TCP cho máy chủ API cục bộ (cần khởi động lại nếu thay đổi khi đang chạy)"
+    },
     "diarization": {
       "title": "Phân biệt người nói",
       "enable": "Bật phân biệt người nói",

@@ -206,6 +206,13 @@
         "description": "Mantén presionado para grabar, suelta para detener"
       }
     },
+    "localApi": {
+      "title": "API local",
+      "enable": "Activar servidor API local",
+      "enableDescription": "Exponer un punto de acceso de transcripción compatible con OpenAI en tu red local",
+      "port": "Puerto",
+      "portDescription": "Puerto TCP para el servidor API local (requiere reinicio si se cambia mientras está en ejecución)"
+    },
     "diarization": {
       "title": "Diarización de hablantes",
       "enable": "Activar diarización de hablantes",
