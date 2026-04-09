@@ -20,14 +20,6 @@ import { useOsType } from "@/hooks/useOsType";
 import { useModelStore } from "@/stores/modelStore";
 import { DiarizedText } from "./DiarizedText";
 
-/**
- * Extended history entry with optional diarized_text field.
- * The backend includes this field but it is not yet in the auto-generated bindings.
- */
-interface HistoryEntryWithDiarization extends HistoryEntry {
-  diarized_text?: string | null;
-}
-
 interface OpenRecordingsButtonProps {
   onClick: () => void;
   label: string;
@@ -52,16 +44,14 @@ const OpenRecordingsButton: React.FC<OpenRecordingsButtonProps> = ({
 export const HistorySettings: React.FC = () => {
   const { t } = useTranslation();
   const osType = useOsType();
-  const [historyEntries, setHistoryEntries] = useState<
-    HistoryEntryWithDiarization[]
-  >([]);
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadHistoryEntries = useCallback(async () => {
     try {
       const result = await commands.getHistoryEntries();
       if (result.status === "ok") {
-        setHistoryEntries(result.data as HistoryEntryWithDiarization[]);
+        setHistoryEntries(result.data);
       }
     } catch (error) {
       console.error("Failed to load history entries:", error);
@@ -242,7 +232,7 @@ export const HistorySettings: React.FC = () => {
 };
 
 interface HistoryEntryProps {
-  entry: HistoryEntryWithDiarization;
+  entry: HistoryEntry;
   onToggleSaved: () => void;
   onCopyText: () => void;
   getAudioUrl: (fileName: string) => Promise<string | null>;
