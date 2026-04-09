@@ -92,6 +92,10 @@
         "title": "輔助使用存取",
         "description": "需要將轉錄文字輸入到您的應用程式中"
       },
+      "screenRecording": {
+        "title": "螢幕錄製與系統音訊",
+        "description": "需要擷取系統音訊（如影片、通話）。"
+      },
       "grant": "授予權限",
       "granted": "已授予",
       "waiting": "等待中...",

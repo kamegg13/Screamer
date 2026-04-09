@@ -92,6 +92,10 @@
         "title": "Quyền truy cập Trợ năng",
         "description": "Cần thiết để nhập văn bản đã chuyển đổi vào các ứng dụng của bạn."
       },
+      "screenRecording": {
+        "title": "Ghi màn hình & âm thanh hệ thống",
+        "description": "Cần thiết để ghi lại âm thanh hệ thống (ví dụ: video, cuộc gọi)."
+      },
       "grant": "Cấp quyền",
       "granted": "Đã cấp",
       "waiting": "Đang chờ...",

@@ -96,6 +96,10 @@
         "title": "Accessibility Access",
         "description": "Required to type transcribed text into your applications."
       },
+      "screenRecording": {
+        "title": "Screen Recording & System Audio",
+        "description": "Required to capture system audio (e.g. videos, calls)."
+      },
       "grant": "Grant Permission",
       "granted": "Granted",
       "waiting": "Waiting...",

@@ -92,6 +92,10 @@
         "title": "辅助功能访问",
         "description": "需要将转录文本输入到您的应用程序中。"
       },
+      "screenRecording": {
+        "title": "屏幕录制与系统音频",
+        "description": "需要捕获系统音频（例如视频、通话）。"
+      },
       "grant": "授予权限",
       "granted": "已授予",
       "waiting": "等待中...",

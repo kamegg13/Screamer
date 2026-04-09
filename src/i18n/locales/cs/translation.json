@@ -92,6 +92,10 @@
         "title": "Přístup k usnadnění",
         "description": "Potřebný pro psaní přepsaného textu do vašich aplikací."
       },
+      "screenRecording": {
+        "title": "Nahrávání obrazovky a systémového zvuku",
+        "description": "Vyžadováno pro zachycení systémového zvuku (např. videa, hovory)."
+      },
       "grant": "Udělit oprávnění",
       "granted": "Uděleno",
       "waiting": "Čekání...",

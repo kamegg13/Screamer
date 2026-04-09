@@ -92,6 +92,10 @@
         "title": "Accesso all'Accessibilità",
         "description": "Necessario per digitare il testo trascritto nelle tue applicazioni."
       },
+      "screenRecording": {
+        "title": "Registrazione schermo e audio di sistema",
+        "description": "Necessario per acquisire l'audio di sistema (video, chiamate, ecc.)."
+      },
       "grant": "Concedi Permesso",
       "granted": "Concesso",
       "waiting": "In attesa...",

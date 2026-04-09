@@ -92,6 +92,10 @@
         "title": "Dostęp do dostępności",
         "description": "Wymagany do wpisywania transkrybowanego tekstu w Twoich aplikacjach."
       },
+      "screenRecording": {
+        "title": "Nagrywanie ekranu i dźwięku systemowego",
+        "description": "Wymagane do przechwytywania dźwięku systemowego (np. filmów, rozmów)."
+      },
       "grant": "Przyznaj uprawnienie",
       "granted": "Przyznano",
       "waiting": "Oczekiwanie...",
