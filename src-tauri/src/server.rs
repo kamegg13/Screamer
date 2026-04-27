@@ -66,7 +66,7 @@ impl ApiServer {
             settings_getter: Arc::new(settings_getter),
         };
 
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             let app = Router::new()
                 .route("/v1/audio/transcriptions", post(transcribe_handler))
                 .layer(CorsLayer::permissive())
