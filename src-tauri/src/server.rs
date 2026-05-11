@@ -72,7 +72,10 @@ impl ApiServer {
                 .layer(CorsLayer::permissive())
                 .with_state(state);
 
-            let addr = format!("0.0.0.0:{port}");
+            // Bind to loopback only — exposing the transcription endpoint on the LAN
+            // is both a privacy risk and a vector for unintended model loads
+            // that would defeat the idle-unload behavior.
+            let addr = format!("127.0.0.1:{port}");
             let listener = match tokio::net::TcpListener::bind(&addr).await {
                 Ok(l) => l,
                 Err(e) => {
