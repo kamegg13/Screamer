@@ -201,7 +201,10 @@ impl Default for KeyboardImplementation {
 
 impl Default for ModelUnloadTimeout {
     fn default() -> Self {
-        ModelUnloadTimeout::Never
+        // Unload model after 5 min of inactivity to free VRAM/Metal context.
+        // Keeping a Parakeet/Whisper model resident indefinitely was the dominant
+        // source of idle GPU consumption on macOS Metal.
+        ModelUnloadTimeout::Min5
     }
 }
 
@@ -850,7 +853,7 @@ pub fn get_default_settings() -> AppSettings {
         debug_mode: false,
         log_level: default_log_level(),
         custom_words: Vec::new(),
-        model_unload_timeout: ModelUnloadTimeout::Never,
+        model_unload_timeout: ModelUnloadTimeout::Min5,
         word_correction_threshold: default_word_correction_threshold(),
         history_limit: default_history_limit(),
         recording_retention_period: default_recording_retention_period(),
